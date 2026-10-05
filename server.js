@@ -36,11 +36,6 @@ async function recentEvents(days = 35) {
   return store.events(new Date(Date.now() - days * 86400e3));
 }
 
-async function todayVitals(date) {
-  const rows = await store.vitals(date);
-  return rows.find((r) => r.date === date) || null;
-}
-
 // ---------- push ----------
 
 async function setupPush() {
@@ -84,8 +79,6 @@ async function buildState() {
   const today = L.summarizeDay(p.date, events, s.tz);
   const tonightDate = nightKey(now, s.tz);
   const tonight = L.summarizeDay(tonightDate, events, s.tz);
-  const vit = await todayVitals(p.date);
-  const energyAuto = L.energyFromVitals(vit);
 
   const ws = L.weekStart(p.date);
   const week = [];
@@ -114,9 +107,7 @@ async function buildState() {
     settings: s,
     today,
     tonight: { date: tonightDate, parked: tonight.parkedTonight, plan: tonight.planTonight },
-    energy: today.energyManual || energyAuto,
-    energyAuto,
-    vitalsToday: vit,
+    energy: today.energyManual,
     week,
     totalWins,
   };
@@ -274,47 +265,36 @@ app.post('/api/push/test', wrap(async (req, res) => {
   res.json({ sent });
 }));
 
-// ---------- progreso y Garmin ----------
+// ---------- progreso ----------
 
 app.get('/api/progress', wrap(async (req, res) => {
   const s = await settings();
   const p = parts(new Date(), s.tz);
-  const from = addDays(p.date, -27);
-  const events = await recentEvents(32);
-  const vitals = await store.vitals(addDays(p.date, -90));
-  const byDate = Object.fromEntries(vitals.map((v) => [v.date, v]));
-  const days = [];
-  for (let d = from; d <= p.date; d = addDays(d, 1)) {
+  const events = await recentEvents(62);
+  const summarize = (d) => {
     const sum = L.summarizeDay(d, events, s.tz);
-    const v = byDate[d];
-    const bed = v ? L.bedtimeAroundMidnight(L.bedtimeMinutes(v, s.tz)) : null;
-    days.push({
+    return {
       date: d,
       win: sum.morningDone,
       parked: sum.parkedLastNight,
+      parkedAt: sum.parkedLastNightAt ? parts(sum.parkedLastNightAt, s.tz).minutes : null,
       pauses: sum.pauses,
       redirected: sum.redirected,
-      entered: sum.entered,
-      battery: v ? v.battery_max : null,
-      sleepScore: v ? v.sleep_score : null,
-      bedtime: bed,
-    });
-  }
-  res.json({ days, insight: L.vitalsInsight(vitals, s.tz) });
-}));
-
-app.post('/api/vitals/import', wrap(async (req, res) => {
-  const rows = L.normalizeVitals(req.body);
-  if (!rows.length) return res.status(400).json({ error: 'no encuentro días en ese archivo' });
-  await store.upsertVitals(rows);
-  res.json({ imported: rows.length, from: rows[0].date, to: rows[rows.length - 1].date });
+    };
+  };
+  const days = [];
+  for (let d = addDays(p.date, -27); d <= p.date; d = addDays(d, 1)) days.push(summarize(d));
+  // Para la conclusión usamos hasta 60 días cerrados (sin contar hoy) desde el primer uso.
+  const firstUse = events.length ? localDate(events[0].at, s.tz) : p.date;
+  const history = [];
+  for (let d = addDays(p.date, -60); d < p.date; d = addDays(d, 1)) if (d > firstUse) history.push(summarize(d));
+  res.json({ days, insight: L.parkingInsight(history, s.bedtime) });
 }));
 
 app.get('/api/export', wrap(async (req, res) => {
   res.json({
     settings: await settings(),
     events: await store.events(new Date(0)),
-    vitals: await store.vitals('0000-00-00'),
   });
 }));
 
@@ -368,21 +348,6 @@ async function tick() {
   }
 }
 
-async function syncVitals() {
-  const url = process.env.VITALS_URL;
-  if (!url) return;
-  try {
-    const headers = process.env.VITALS_TOKEN ? { Authorization: `Bearer ${process.env.VITALS_TOKEN}` } : {};
-    const r = await fetch(url, { headers });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const rows = L.normalizeVitals(await r.json());
-    await store.upsertVitals(rows);
-    console.log(`vitals: ${rows.length} días sincronizados`);
-  } catch (err) {
-    console.error('vitals sync', err.message);
-  }
-}
-
 async function main() {
   await store.init();
   if (!APP_TOKEN) {
@@ -398,8 +363,6 @@ async function main() {
   app.listen(port, () => console.log(`phone-detox escuchando en :${port}`));
   setInterval(() => tick().catch((e) => console.error('tick', e)), 60e3);
   tick().catch((e) => console.error('tick', e));
-  syncVitals();
-  setInterval(syncVitals, 60 * 60e3);
 }
 
 if (require.main === module) main();

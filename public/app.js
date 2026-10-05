@@ -8,7 +8,7 @@
 
   // ---------- utilidades ----------
 
-  const store = {
+  const local = {
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ } },
     del(k) { try { localStorage.removeItem(k); } catch { /* sin almacenamiento */ } },
@@ -17,6 +17,7 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   const shuffle = (xs) => xs.map((x) => [Math.random(), x]).sort((a, b) => a[0] - b[0]).map((x) => x[1]);
+  const token = () => local.get('token');
 
   function toast(msg, ms = 2200) {
     $toast.textContent = msg;
@@ -25,8 +26,6 @@
     toast.t = setTimeout(() => { $toast.hidden = true; }, ms);
   }
 
-  function token() { return store.get('token'); }
-
   async function api(path, opts = {}) {
     const res = await fetch(path, {
       method: opts.method || (opts.body ? 'POST' : 'GET'),
@@ -34,7 +33,7 @@
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     });
     if (res.status === 401) {
-      store.del('token');
+      local.del('token');
       location.hash = '#/login';
       throw new Error('no autorizado');
     }
@@ -44,6 +43,7 @@
   }
 
   const event = (type, data = {}) => api('/api/event', { body: { type, data } });
+  const post = (path) => api(path, { method: 'POST' });
 
   function parseHash() {
     const raw = location.hash.replace(/^#\/?/, '');
@@ -56,7 +56,7 @@
     const { route, q } = parseHash();
     const t = q.get('t');
     if (!t) return;
-    store.set('token', t);
+    local.set('token', t);
     q.delete('t');
     const rest = q.toString();
     history.replaceState(null, '', `${location.pathname}#/${route}${rest ? `?${rest}` : ''}`);
@@ -64,6 +64,7 @@
 
   function view(html, { nav = true } = {}) {
     $app.innerHTML = `<div class="fade">${html}</div>`;
+    $app.classList.toggle('bare', !nav);
     $nav.hidden = !nav;
     const { route } = parseHash();
     $nav.querySelectorAll('a').forEach((a) => a.classList.toggle('on', a.dataset.r === route));
@@ -74,9 +75,9 @@
     $app.querySelectorAll(sel).forEach((el) => el.addEventListener(evt, (e) => fn(e, el)));
   }
 
-  const greeting = (h) => (h < 6 ? 'Es tarde' : h < 13 ? 'Buenos días' : h < 21 ? 'Buenas tardes' : 'Buenas noches');
-  const ENERGY_TEXT = { baja: 'Me arrastro', media: 'Normal', alta: 'Con ganas' };
+  const ENERGY_TEXT = { baja: 'Poca', media: 'Normal', alta: 'Bastante' };
   const WEEKDAYS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+  const today = () => new Date().toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' });
 
   function activeSteps(S) {
     const steps = S.settings.morningSteps || [];
@@ -85,10 +86,7 @@
 
   function weekDots(S) {
     return `<div class="week">${S.week.map((d, i) => `
-      <div class="day">
-        <div class="dot ${d.win ? 'win' : ''} ${d.date === S.local.date ? 'today' : ''} ${d.future ? 'future' : ''}">${d.win ? '☀' : ''}</div>
-        ${WEEKDAYS[i]}
-      </div>`).join('')}</div>`;
+      <div class="day"><div class="dot ${d.win ? 'win' : ''} ${d.date === S.local.date ? 'today' : ''} ${d.future ? 'future' : ''}"></div>${WEEKDAYS[i]}</div>`).join('')}</div>`;
   }
 
   function pickAlternative(S, energy, exclude = []) {
@@ -102,11 +100,11 @@
 
   function renderLogin() {
     view(`
-      <p class="eyebrow">Mañanas</p>
-      <h1>Hola</h1>
-      <p class="muted">Introduce el código de acceso (la variable <b>APP_TOKEN</b> de Railway).</p>
+      <h1>Mañanas</h1>
+      <p class="muted">Introduce tu código de acceso.</p>
       <form id="f">
         <input id="tok" autocomplete="current-password" type="password" placeholder="Código" required>
+        <div class="space"></div>
         <button type="submit">Entrar</button>
       </form>`, { nav: false });
     $app.querySelector('#f').addEventListener('submit', async (e) => {
@@ -114,78 +112,58 @@
       const t = $app.querySelector('#tok').value.trim();
       const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) });
       if (!r.ok) return toast('Código incorrecto');
-      store.set('token', t);
+      local.set('token', t);
       location.hash = '#/';
     });
   }
 
   async function renderHome() {
     const S = await api('/api/state');
-    const h = S.local.hour;
-    let hero = '';
+    const wins = S.week.filter((d) => d.win).length;
+    let main = '';
     if (S.mode === 'manana') {
-      const steps = activeSteps(S);
-      const next = steps.find((s) => !S.today.stepsDone.includes(s.id));
-      hero = `
-        <div class="card hero accent">
-          <p class="eyebrow">Tu mañana</p>
-          <div class="step-now">${esc(next ? next.text : 'Empieza la mañana')}</div>
-          ${S.today.plan ? `<p class="muted">Anoche elegiste: <b>${esc(S.today.plan)}</b></p>` : ''}
-          <a class="btn big" href="#/manana">Empezar</a>
-        </div>`;
+      const next = activeSteps(S).find((s) => !S.today.stepsDone.includes(s.id));
+      main = `
+        <p class="label">Tu mañana</p>
+        <div class="big-text">${esc(next ? next.text : 'Empieza la mañana')}</div>
+        <a class="btn" href="#/manana">Empezar</a>`;
     } else if (S.mode === 'noche') {
-      hero = `
-        <div class="card hero accent">
-          <p class="eyebrow">Esta noche</p>
-          <div class="step-now">Aparca el móvil fuera del cuarto</div>
-          <p class="muted">Dos minutos: eliges lo primero de mañana y lo dejas a cargar.</p>
-          <a class="btn big" href="#/noche">Preparar la noche</a>
-        </div>`;
+      main = `
+        <p class="label">Esta noche</p>
+        <div class="big-text">Deja el móvil fuera del cuarto.</div>
+        <a class="btn" href="#/noche">Preparar la noche</a>`;
     } else if (S.mode === 'aparcado') {
-      hero = `
-        <div class="card hero">
-          <p class="eyebrow">Aparcado</p>
-          <div class="step-now">Ya está. Buenas noches 🌙</div>
-          <p class="muted">Si estás leyendo esto en la cama, el móvil no está fuera 😉</p>
-        </div>`;
+      main = `
+        <p class="label">Esta noche</p>
+        <div class="big-text">Buenas noches.</div>
+        <p class="muted">Si estás leyendo esto en la cama, el móvil no está fuera.</p>`;
     } else {
-      hero = `
-        <div class="card hero">
-          <p class="eyebrow">${S.today.morningDone ? 'Mañana ganada' : 'Ahora'}</p>
-          <div class="step-now">${S.today.morningDone ? 'La mañana ya es tuya. El resto del día, también.' : '¿Tienes un rato?'}</div>
-          <button id="idea" class="secondary">Dame una idea que no sea el móvil</button>
-          <div id="ideaOut"></div>
-        </div>`;
+      main = `
+        <p class="label">${S.today.morningDone ? 'Mañana ganada' : 'Ahora'}</p>
+        <div class="big-text" id="idea">${S.today.morningDone ? 'El resto del día también es tuyo.' : '¿Un rato libre?'}</div>
+        <button class="secondary" id="ideaBtn">Dame una idea</button>`;
     }
 
-    const energy = S.energyAuto
-      ? `<p class="small muted">Garmin hoy: batería ${S.vitalsToday.battery_max ?? '–'} · sueño ${S.vitalsToday.sleep_score ?? '–'} → energía <b>${S.energyAuto}</b></p>`
-      : '';
-
     view(`
-      <p class="eyebrow">${esc(greeting(h))}</p>
-      <h1>${S.totalWins ? `${S.totalWins} ${S.totalWins === 1 ? 'mañana ganada' : 'mañanas ganadas'}` : 'Hoy empieza'}</h1>
-      ${energy}
-      ${hero}
-      <div class="card">
-        <h3>Esta semana</h3>
-        ${weekDots(S)}
-        <p class="small muted">Cada sol es una mañana en la que hiciste tus pasos. No hay rachas que romper: cada semana empieza limpia y el total solo sube.</p>
-      </div>
-      ${!isStandalone() ? `<div class="card"><h3>Instálala</h3><p class="small muted">En Safari: Compartir → «Añadir a pantalla de inicio». Solo así llegan las notificaciones.</p></div>` : ''}
-      <a class="btn secondary" href="#/noche">Preparar la noche</a>
-      <a class="btn ghost" href="#/atajos">Configurar los Atajos de iOS</a>
+      <p class="label">${esc(today())}</p>
+      ${main}
+      <h2>Semana</h2>
+      ${weekDots(S)}
+      <p class="small muted">${wins} esta semana · ${S.totalWins} en total</p>
+      ${!isStandalone() ? '<div class="space"></div><p class="small muted">Añádela a la pantalla de inicio (Compartir → Añadir a pantalla de inicio) para recibir avisos.</p>' : ''}
     `);
 
-    on('#idea', 'click', () => {
-      const a = pickAlternative(S, S.energy);
-      $app.querySelector('#ideaOut').innerHTML = `
-        <div class="step-now" style="font-size:22px">${esc(a.text)}</div>
-        <button id="doIt">Voy</button>`;
-      on('#doIt', 'click', async () => {
-        await event('alt_done', { alt: a.id, text: a.text });
-        toast('Hecho. Deja el móvil y a por ello.');
-      });
+    let current = null;
+    on('#ideaBtn', 'click', async (e, el) => {
+      if (current) {
+        await event('alt_done', { alt: current.id, text: current.text });
+        toast('A por ello');
+        return renderHome();
+      }
+      current = pickAlternative(S, S.energy);
+      $app.querySelector('#idea').textContent = current.text;
+      el.textContent = 'Voy';
+      el.classList.remove('secondary');
     });
   }
 
@@ -194,10 +172,13 @@
     if (S.today.morningDone) return renderMorningWin(S);
     if (!S.energy) {
       view(`
-        <p class="eyebrow">Buenos días</p>
-        <h1>¿Cómo te has levantado?</h1>
-        <p class="muted">Sin juzgar. Si la energía está baja, hoy toca la versión mínima, y cuenta igual.</p>
-        ${Object.entries(ENERGY_TEXT).map(([k, v]) => `<button class="${k === 'media' ? '' : 'secondary'} big" data-e="${k}">${v}</button>`).join('')}
+        <p class="label">Buenos días</p>
+        <h1>¿Cuánta energía tienes?</h1>
+        <p class="muted">Si es poca, hoy haces la versión corta. Cuenta igual.</p>
+        <div class="space"></div>
+        <div class="options">
+          ${Object.entries(ENERGY_TEXT).map(([k, v]) => `<button data-e="${k}">${v}</button>`).join('')}
+        </div>
       `, { nav: false });
       on('[data-e]', 'click', async (e, el) => {
         await event('energy', { level: el.dataset.e });
@@ -212,22 +193,19 @@
       await event('morning_done', { energy: S.energy, steps: done.length });
       return renderMorning();
     }
-    const idx = steps.indexOf(next);
     view(`
-      <p class="eyebrow">Paso ${idx + 1} de ${steps.length}${S.energy === 'baja' ? ' · versión mínima' : ''}</p>
-      <div class="step-now" style="font-size:34px;margin-top:28px">${esc(next.text)}</div>
-      ${S.today.plan ? `<p class="muted">Y luego: <b>${esc(S.today.plan)}</b></p>` : ''}
-      <button class="big" id="done" style="margin-top:28px">Hecho</button>
+      <p class="label">${steps.indexOf(next) + 1} / ${steps.length}${S.energy === 'baja' ? ' · versión corta' : ''}</p>
+      <div class="big-text">${esc(next.text)}</div>
+      <button id="done">Hecho</button>
+      ${S.today.plan ? `<p class="small muted center">Después: ${esc(S.today.plan)}</p>` : ''}
       <ul class="steps">
         ${steps.map((s) => `
           <li class="${done.includes(s.id) ? 'done' : ''} ${s.id === next.id ? 'current' : ''}" data-s="${s.id}">
-            <span class="check">${done.includes(s.id) ? '✓' : ''}</span>
-            <span class="t">${esc(s.text)}</span>
+            <span class="mark"></span><span class="t">${esc(s.text)}</span>
           </li>`).join('')}
       </ul>
-      <p class="small muted" style="margin-top:22px">Energía${S.today.energyManual ? '' : ' (según Garmin)'}:</p>
+      <h2>Energía</h2>
       <div class="chips">${Object.entries(ENERGY_TEXT).map(([k, v]) => `<button class="chip ${S.energy === k ? 'on' : ''}" data-lvl="${k}">${v}</button>`).join('')}</div>
-      <p class="small muted center">Haz el paso y vuelve a pulsar. Entre paso y paso, el móvil boca abajo.</p>
     `, { nav: false });
     const mark = async (id) => {
       await event('morning_step', { stepId: id });
@@ -244,17 +222,14 @@
 
   function renderMorningWin(S) {
     view(`
-      <div class="center" style="margin-top:40px">
-        <div style="font-size:72px">☀</div>
-        <h1>Mañana ganada</h1>
-        <p class="muted">Llevas <b>${S.totalWins}</b> en total. Esta semana:</p>
-      </div>
+      <p class="label">Mañana ganada</p>
+      <div class="big-text">Hecho.</div>
+      <p class="muted">${S.today.plan ? `Ahora: ${esc(S.today.plan)}.` : 'Ahora, sal de casa. Fuera es más fácil.'}</p>
+      <h2>Semana</h2>
       ${weekDots(S)}
-      <div class="card">
-        <h3>¿Y ahora?</h3>
-        <p>${S.today.plan ? `Lo que elegiste anoche: <b>${esc(S.today.plan)}</b>.` : 'Lo siguiente: salir de casa. La uni, la biblioteca, un café. Fuera es más fácil.'}</p>
-      </div>
-      <a class="btn" href="#/">Listo</a>
+      <p class="small muted">${S.totalWins} en total</p>
+      <div class="space"></div>
+      <a class="btn secondary" href="#/">Listo</a>
     `);
   }
 
@@ -262,28 +237,24 @@
     const S = await api('/api/state');
     if (S.tonight.parked) {
       view(`
-        <div class="center" style="margin-top:40px">
-          <div style="font-size:64px">🌙</div>
-          <h1>Buenas noches</h1>
-          <p class="muted">Mañana a las <b>${esc(S.settings.wake)}</b>.${S.tonight.plan ? ` Lo primero: <b>${esc(S.tonight.plan)}</b>.` : ''}</p>
-          <p class="muted">El móvil se queda fuera. Lo que hay ahí dentro seguirá ahí mañana.</p>
-        </div>`);
+        <p class="label">Esta noche</p>
+        <div class="big-text">Buenas noches.</div>
+        <p class="muted">Mañana a las ${esc(S.settings.wake)}.${S.tonight.plan ? ` Después de tus pasos: ${esc(S.tonight.plan)}.` : ''}</p>
+      `);
       return;
     }
     const alts = S.settings.alternatives || [];
+    const custom = S.tonight.plan && !alts.some((a) => a.text === S.tonight.plan) ? S.tonight.plan : '';
     view(`
-      <p class="eyebrow">Esta noche · 2 minutos</p>
-      <h1>Deja la mañana preparada</h1>
-      <div class="card">
-        <h3>1 · Mañana, después de tus pasos, lo primero será…</h3>
-        <div class="chips">${alts.map((a) => `<button class="chip ${S.tonight.plan === a.text ? 'on' : ''}" data-p="${esc(a.text)}">${esc(a.text)}</button>`).join('')}</div>
-        <input id="plan" placeholder="Otra cosa…" value="${esc(S.tonight.plan && !alts.some((a) => a.text === S.tonight.plan) ? S.tonight.plan : '')}">
-      </div>
-      <div class="card">
-        <h3>2 · El móvil, fuera del cuarto</h3>
-        <p class="muted small">Al cargador del salón o la cocina, con la alarma puesta a las ${esc(S.settings.wake)}. Cuando suene tendrás que levantarte para apagarla, y eso ya es medio trabajo hecho.</p>
-        <button class="big" id="park">Aparcado</button>
-      </div>
+      <p class="label">Esta noche</p>
+      <h1>Prepara mañana</h1>
+      <h2>Después de tus pasos, lo primero</h2>
+      <div class="chips">${alts.map((a) => `<button class="chip ${S.tonight.plan === a.text ? 'on' : ''}" data-p="${esc(a.text)}">${esc(a.text)}</button>`).join('')}</div>
+      <input id="plan" placeholder="Otra cosa" value="${esc(custom)}">
+      <h2>El móvil</h2>
+      <p class="muted">A cargar fuera del cuarto, con la alarma a las ${esc(S.settings.wake)}. Tendrás que levantarte para apagarla.</p>
+      <div class="space"></div>
+      <button id="park">Aparcado</button>
     `);
     let plan = S.tonight.plan || '';
     on('[data-p]', 'click', (e, el) => {
@@ -292,8 +263,7 @@
       $app.querySelector('#plan').value = '';
     });
     on('#park', 'click', async () => {
-      const custom = $app.querySelector('#plan').value.trim();
-      const finalPlan = custom || plan;
+      const finalPlan = $app.querySelector('#plan').value.trim() || plan;
       if (finalPlan && finalPlan !== S.tonight.plan) await event('plan_tomorrow', { text: finalPlan });
       await event('park');
       renderNight();
@@ -312,10 +282,9 @@
     const breath = () => {
       let n = 8;
       view(`
-        <p class="eyebrow center">${esc(appDef.name)}</p>
-        <h1 class="center">Un momento</h1>
-        <div class="breath"><div class="circle" id="n">${n}</div></div>
-        <p class="center muted">Inspira mientras crece, suelta mientras encoge.<br>${esc(appDef.name)} va a seguir ahí.</p>
+        <p class="label center">${esc(appDef.name)}</p>
+        <div class="breath"><div class="circle"><span id="n">${n}</span></div></div>
+        <p class="center muted">Inspira al crecer, suelta al encoger.</p>
       `, { nav: false });
       const timer = setInterval(() => {
         n -= 1;
@@ -327,13 +296,16 @@
 
     const ask = () => {
       view(`
-        <p class="eyebrow">Hoy: ${S.today.pauses} ${S.today.pauses === 1 ? 'intento' : 'intentos'} · ${S.today.redirected} veces elegiste otra cosa</p>
+        <p class="label">Hoy: ${S.today.pauses} ${S.today.pauses === 1 ? 'pausa' : 'pausas'} · ${S.today.redirected} veces otra cosa</p>
         <h1>¿Qué te ha traído aquí?</h1>
-        <button class="secondary" data-r="concreto">Busco algo concreto</button>
-        <button class="secondary" data-r="cansancio">Cansancio, no me da para más</button>
-        <button class="secondary" data-r="aburrimiento">Aburrimiento</button>
-        <button class="secondary" data-r="inercia">Ni lo he pensado</button>
-        <button class="secondary" data-r="evitar">Estoy evitando algo</button>
+        <div class="space"></div>
+        <div class="options">
+          <button data-r="concreto">Busco algo concreto</button>
+          <button data-r="cansancio">Cansancio</button>
+          <button data-r="aburrimiento">Aburrimiento</button>
+          <button data-r="inercia">Ni lo he pensado</button>
+          <button data-r="evitar">Estoy evitando algo</button>
+        </div>
       `, { nav: false });
       on('[data-r]', 'click', (e, el) => { reason = el.dataset.r; suggest(); });
     };
@@ -341,28 +313,26 @@
     const suggest = () => {
       const morningPending = S.mode === 'manana' && !S.today.morningDone;
       const nextStep = activeSteps(S).find((s) => !S.today.stepsDone.includes(s.id));
-      const energy = reason === 'cansancio' ? 'baja' : S.energy;
-      const alt = pickAlternative(S, energy, seen);
+      const alt = pickAlternative(S, reason === 'cansancio' ? 'baja' : S.energy, seen);
       seen.push(alt.id);
       const lines = {
-        concreto: 'Vale. Entra, busca eso y sal. Te aviso cuando pase el tiempo.',
-        cansancio: 'El scroll no descansa: cansa más. Prueba algo de energía baja que sí recarga.',
-        aburrimiento: 'El aburrimiento dura dos minutos si no lo tapas. Prueba esto:',
-        inercia: 'Ha sido el piloto automático. Ya lo has pillado, y eso es lo difícil.',
-        evitar: 'Hacer solo los primeros 2 minutos de eso que evitas suele bastar para arrancar.',
-        fin: 'Se acabó el tiempo. Buen momento para cerrar.',
+        concreto: 'Entra, búscalo y sal. Te aviso al acabar el tiempo.',
+        cansancio: 'El scroll no descansa. Esto sí:',
+        aburrimiento: 'El aburrimiento pasa en dos minutos. Prueba esto:',
+        inercia: 'Piloto automático. Ya lo has visto, que es lo difícil.',
+        evitar: 'Empieza con solo dos minutos de eso que evitas.',
+        fin: 'Se acabó el tiempo.',
       };
       const main = morningPending && nextStep
         ? { text: nextStep.text, href: '#/manana', label: 'Volver a mi mañana' }
         : { text: alt.text, label: 'Lo hago' };
       view(`
-        <p class="eyebrow">${esc(lines[reason] || '')}</p>
-        <div class="card hero accent">
-          <div class="step-now">${esc(main.text)}</div>
-          <button class="big" id="go">${main.label}</button>
-          ${main.href ? '' : '<button class="ghost" id="other">Otra idea</button>'}
-        </div>
-        ${finished ? '' : `<button class="${reason === 'concreto' ? '' : 'secondary'}" id="enter">Entrar ${S.settings.allowMinutes} min en ${esc(appDef.name)}</button>`}
+        <p class="label">${esc(lines[reason] || '')}</p>
+        <div class="big-text">${esc(main.text)}</div>
+        <button id="go">${main.label}</button>
+        ${main.href ? '' : '<button class="ghost" id="other">Otra idea</button>'}
+        <div class="space"></div>
+        ${finished ? '' : `<button class="secondary" id="enter">Entrar ${S.settings.allowMinutes} min en ${esc(appDef.name)}</button>`}
         <a class="btn ghost" href="#/">Cerrar</a>
       `, { nav: false });
       on('#other', 'click', suggest);
@@ -371,12 +341,9 @@
         if (main.href) return void (location.hash = main.href);
         await event('alt_done', { alt: alt.id, text: alt.text });
         view(`
-          <div class="center" style="margin-top:60px">
-            <div style="font-size:64px">👏</div>
-            <h1>Bien elegido</h1>
-            <p class="muted">Bloquea la pantalla y a por ello. El móvil, boca abajo.</p>
-          </div>
-          <a class="btn secondary" href="#/">Inicio</a>`);
+          <p class="label">Bien elegido</p>
+          <div class="big-text">Bloquea la pantalla y a por ello.</div>
+          <a class="btn secondary" href="#/">Inicio</a>`, { nav: false });
       });
       on('#enter', 'click', async () => {
         await api('/api/allow', { body: { app: appId, minutes: S.settings.allowMinutes } });
@@ -395,126 +362,101 @@
     const parked = P.days.filter((d) => d.parked).length;
     const pauses = P.days.reduce((a, d) => a + d.pauses, 0);
     const redirected = P.days.reduce((a, d) => a + d.redirected, 0);
-    const I = P.insight;
     const offset = (new Date(`${P.days[0].date}T12:00:00Z`).getUTCDay() + 6) % 7;
-    let garmin = `<p class="muted small">Importa el export de Garmin (vitals-lab, .json) para ver cómo afecta la hora de dormir a tus mañanas.</p>`;
-    if (I && I.nights) {
-      garmin = '';
-      if (I.early && I.late) {
-        garmin += `<p>Las noches que te duermes <b>antes de la 1</b>, te levantas con batería <b>${I.early.battery}</b> y sueño <b>${I.early.sleepScore}</b>.
-          Cuando es <b>después de las 2</b>: batería <b>${I.late.battery}</b>, sueño <b>${I.late.sleepScore}</b>.</p>
-          <p class="small muted">${I.early.n} noches frente a ${I.late.n}. La mañana se gana (o se pierde) la noche anterior.</p>`;
-      }
-      if (I.avgBedtimeRecent) garmin += `<div class="stats"><div class="stat"><b>${I.avgBedtimeRecent}</b><span>hora media de dormirte (14 días)</span></div>
-        <div class="stat"><b>${I.stepsRecent?.toLocaleString('es') ?? '–'}</b><span>pasos/día (14 días)${I.stepsBefore ? ` · antes ${I.stepsBefore.toLocaleString('es')}` : ''}</span></div></div>`;
+    const I = P.insight;
+    let insight = '<p class="muted">Cuando lleves unas semanas, aquí verás cómo influye la hora a la que aparcas el móvil en tus mañanas.</p>';
+    if (I.onTime && I.other) {
+      insight = `<p>Cuando aparcas el móvil a tu hora, ganas <b>${I.onTime.of10} de cada 10</b> mañanas. Cuando no, <b>${I.other.of10} de cada 10</b>.</p>`;
     }
+    if (I.avgParkedAt) insight += `<p class="small muted">Sueles aparcarlo a las ${I.avgParkedAt}.</p>`;
     view(`
-      <p class="eyebrow">Últimas 4 semanas</p>
+      <p class="label">Últimas 4 semanas</p>
       <h1>Progreso</h1>
-      <div class="card">
-        <h3>Esta semana</h3>
-        ${weekDots(S)}
-      </div>
+      <div class="space"></div>
       <div class="stats">
         <div class="stat"><b>${wins}</b><span>mañanas ganadas</span></div>
         <div class="stat"><b>${parked}</b><span>noches con el móvil fuera</span></div>
-        <div class="stat"><b>${pauses}</b><span>pausas antes de abrir apps</span></div>
-        <div class="stat"><b>${pauses ? Math.round((redirected / pauses) * 100) : 0}%</b><span>veces que elegiste otra cosa</span></div>
+        <div class="stat"><b>${pauses}</b><span>pausas</span></div>
+        <div class="stat"><b>${pauses ? Math.round((redirected / pauses) * 100) : 0}%</b><span>elegiste otra cosa</span></div>
       </div>
-      <div class="card">
-        <h3>28 días</h3>
-        <div class="grid28">
-          ${'<div></div>'.repeat(offset)}
-          ${P.days.map((d) => `<div class="cell ${d.win ? 'win' : ''} ${d.parked ? 'parked' : ''}" title="${d.date}">${Number(d.date.slice(8))}</div>`).join('')}
-        </div>
-        <p class="small muted">Relleno: mañana ganada. Raya verde: la noche anterior dejaste el móvil fuera.</p>
+      <h2>28 días</h2>
+      <div class="grid28">
+        ${WEEKDAYS.map((d) => `<div class="cell">${d}</div>`).join('')}
+        ${'<div></div>'.repeat(offset)}
+        ${P.days.map((d) => `<div class="cell ${d.win ? 'win' : ''} ${d.parked ? 'parked' : ''}"><i></i><span>${Number(d.date.slice(8))}</span></div>`).join('')}
       </div>
-      <div class="card">
-        <h3>Sueño y energía (Garmin)</h3>
-        ${garmin}
-        <label for="vf" class="btn secondary" style="font-weight:600">Importar export de Garmin</label>
-        <input id="vf" type="file" accept="application/json,.json" hidden>
-      </div>
+      <p class="small muted" style="margin-top:16px">Punto relleno: mañana ganada. Número subrayado: la noche anterior el móvil durmió fuera.</p>
+      <h2>Lo que dicen tus datos</h2>
+      ${insight}
+      <h2>Esta semana</h2>
+      ${weekDots(S)}
     `);
-    on('#vf', 'change', async (e, el) => {
-      const file = el.files[0];
-      if (!file) return;
-      try {
-        const json = JSON.parse(await file.text());
-        const r = await api('/api/vitals/import', { body: json });
-        toast(`${r.imported} días importados`);
-        renderProgress();
-      } catch (err) { toast(err.message); }
-    });
   }
 
   async function renderLock() {
-    const L = await api('/api/lock');
-    const S = await api('/api/state');
+    const [L, S] = await Promise.all([api('/api/lock'), api('/api/state')]);
     const setup = `
-      <details class="card">
-        <summary><b>Qué poner en Tiempo de uso</b></summary>
+      <details>
+        <summary>Qué poner en Tiempo de uso</summary>
         <ol class="guide small">
-          <li><b>Ajustes → Tiempo de uso → Bloquear ajustes de Tiempo de uso</b> (o «Usar código»): mete el código de aquí.</li>
-          <li><b>Límites de uso → Añadir límite</b>: Instagram, YouTube y, en «Sitios web», <code>x.com</code>, <code>instagram.com</code> y <code>youtube.com</code>. Pon 15–20 min al día y activa «Bloquear al final del límite».</li>
-          <li><b>Contenido y privacidad → Compras en iTunes y App Store → Instalar apps: No permitir.</b> Así no puedes reinstalar Instagram en un mal momento.</li>
-          <li>Opcional: <b>Tiempo de inactividad</b> de ${esc(S.settings.bedtime)} a ${esc(S.settings.wake)}, dejando permitidos solo Teléfono, Mensajes y Reloj.</li>
+          <li><b>Ajustes → Tiempo de uso → Bloquear ajustes</b>: usa el código de aquí.</li>
+          <li><b>Límites de uso</b>: Instagram, YouTube y los sitios <code>x.com</code>, <code>instagram.com</code>, <code>youtube.com</code>. 15–20 min al día, con «Bloquear al final del límite».</li>
+          <li><b>Contenido y privacidad → Compras en App Store → Instalar apps: No permitir.</b> Así no reinstalas Instagram en un mal momento.</li>
+          <li>Opcional: <b>Tiempo de inactividad</b> de ${esc(S.settings.bedtime)} a ${esc(S.settings.wake)}.</li>
         </ol>
-        <p class="small muted">Los nombres pueden cambiar un poco según la versión de iOS. Si olvidas el código, Apple deja restablecerlo con tu Apple ID: es una salida de emergencia, no un truco.</p>
+        <p class="small muted">Los nombres pueden variar según la versión de iOS. Si olvidas el código, Apple permite restablecerlo con tu Apple ID.</p>
       </details>`;
 
     if (!L.exists) {
       view(`
-        <p class="eyebrow">Candado</p>
-        <h1>Un código de Tiempo de uso que no te sabes</h1>
-        <p class="muted">Los límites no funcionan si te sabes el código. La app genera uno, lo pones en Tiempo de uso y desaparece.
-          Solo vuelve a aparecer cuando <b>completas tu mañana</b> o después de <b>esperar ${L.waitMinutes} minutos</b>, que es tiempo de sobra para que se pase el impulso.</p>
+        <p class="label">Candado</p>
+        <h1>Un código que no te sabes</h1>
+        <p class="muted">Los límites no sirven si te sabes el código. La app crea uno, lo pones en Tiempo de uso y se esconde. Vuelve a aparecer si completas tu mañana o esperas ${L.waitMinutes} minutos.</p>
+        <div class="space"></div>
         <button id="new">Crear código</button>
+        <div class="space"></div>
         ${setup}`);
-      on('#new', 'click', async () => { await api('/api/lock/new', { method: 'POST' }); renderLock(); });
+      on('#new', 'click', async () => { await post('/api/lock/new'); renderLock(); });
       return;
     }
 
     if (L.pendingCode) {
       view(`
-        <p class="eyebrow">Candado</p>
-        ${L.previousCode ? `
-          <h1>Aquí tienes</h1>
-          <p>Código actual, para entrar en Tiempo de uso:</p>
-          <div class="code">${esc(L.previousCode)}</div>
-          <p>Cuando acabes, ve a <b>Tiempo de uso → Cambiar código</b> y pon el nuevo:</p>`
-        : `<h1>Tu nuevo código</h1>
-          <p>Ponlo ahora en <b>Ajustes → Tiempo de uso → Bloquear ajustes</b>. Después pulsa «Ya está» y no volverás a verlo.</p>`}
+        <p class="label">Candado</p>
+        ${L.previousCode
+          ? `<h1>Código actual</h1>
+             <div class="code">${esc(L.previousCode)}</div>
+             <p class="muted">Úsalo para entrar en Tiempo de uso. Al acabar, en <b>Cambiar código</b>, pon este nuevo:</p>`
+          : `<h1>Tu código</h1>
+             <p class="muted">Ponlo ahora en Ajustes → Tiempo de uso → Bloquear ajustes. Después no volverás a verlo.</p>`}
         <div class="code">${esc(L.pendingCode)}</div>
-        <button id="ok">Ya está, escóndelo</button>
+        <button id="ok">Hecho, escóndelo</button>
         ${L.previousCode ? '' : '<button class="ghost" id="cancel">Cancelar</button>'}
-        <p class="small muted">Por seguridad, se esconde solo a los 30 minutos.</p>
+        <p class="small muted center">Se esconde solo a los 30 minutos.</p>
+        <div class="space"></div>
         ${setup}`);
-      on('#ok', 'click', async () => { await api('/api/lock/confirm', { method: 'POST' }); toast('Escondido'); renderLock(); });
-      on('#cancel', 'click', async () => { await api('/api/lock/forget', { method: 'POST' }); renderLock(); });
+      on('#ok', 'click', async () => { await post('/api/lock/confirm'); renderLock(); });
+      on('#cancel', 'click', async () => { await post('/api/lock/forget'); renderLock(); });
       return;
     }
 
     const waitLeft = L.waitEnds ? Math.max(0, Math.ceil((new Date(L.waitEnds) - Date.now()) / 1000)) : null;
+    const mmss = (x) => `${Math.floor(x / 60)}:${String(x % 60).padStart(2, '0')}`;
     view(`
-      <p class="eyebrow">Candado puesto</p>
-      <h1>🔒 Límites protegidos</h1>
+      <p class="label">Candado</p>
+      <h1>Límites protegidos</h1>
       <p class="muted">Desde el ${new Date(L.setAt).toLocaleDateString('es', { day: 'numeric', month: 'long' })}.</p>
-      ${L.canReveal ? `
-        <div class="card"><p>${L.morningDone ? 'Has completado tu mañana, así que puedes ver el código.' : 'Ya has esperado.'} Al verlo se generará uno nuevo para que vuelvas a cerrarlo.</p>
-        <button id="reveal">Ver el código</button></div>`
-      : `
-        <div class="card">
-          <h3>¿Necesitas el código?</h3>
-          <p class="muted small">Dos formas: completa tu mañana, o espera ${L.waitMinutes} minutos. Si dentro de ${L.waitMinutes} minutos lo sigues necesitando, será por algo.</p>
-          ${waitLeft != null
-            ? `<div class="code" id="cd">${Math.floor(waitLeft / 60)}:${String(waitLeft % 60).padStart(2, '0')}</div>`
-            : `<button class="secondary" id="wait">Empezar a esperar ${L.waitMinutes} min</button>`}
-          ${!L.morningDone ? '<a class="btn" href="#/manana">Ir a mi mañana</a>' : ''}
-        </div>`}
+      <div class="space"></div>
+      ${L.canReveal
+        ? `<p>${L.morningDone ? 'Has completado tu mañana.' : 'Ya has esperado.'} Puedes ver el código; después se cambiará por uno nuevo.</p>
+           <button id="reveal">Ver el código</button>`
+        : `<p class="muted">Para ver el código, completa tu mañana o espera ${L.waitMinutes} minutos. Si después de esperar lo sigues necesitando, será por algo.</p>
+           ${waitLeft != null ? `<div class="code" id="cd">${mmss(waitLeft)}</div>` : `<button class="secondary" id="wait">Esperar ${L.waitMinutes} min</button>`}
+           ${!L.morningDone ? '<a class="btn" href="#/manana">Ir a mi mañana</a>' : ''}`}
+      <div class="space"></div>
       ${setup}`);
-    on('#reveal', 'click', async () => { await api('/api/lock/reveal', { method: 'POST' }); renderLock(); });
-    on('#wait', 'click', async () => { await api('/api/lock/wait', { method: 'POST' }); renderLock(); });
+    on('#reveal', 'click', async () => { await post('/api/lock/reveal'); renderLock(); });
+    on('#wait', 'click', async () => { await post('/api/lock/wait'); renderLock(); });
     if (waitLeft != null) {
       let left = waitLeft;
       const t = setInterval(() => {
@@ -522,7 +464,7 @@
         if (!el) return clearInterval(t);
         left -= 1;
         if (left <= 0) { clearInterval(t); renderLock(); return; }
-        el.textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+        el.textContent = mmss(left);
       }, 1000);
     }
   }
@@ -532,58 +474,55 @@
     const s = S.settings;
     const stepsText = s.morningSteps.map((x) => `${x.min ? '* ' : ''}${x.text}`).join('\n');
     const altsBy = (e) => s.alternatives.filter((a) => a.energy === e).map((a) => a.text).join('\n');
-    const pushState = !('serviceWorker' in navigator) || !('PushManager' in window)
-      ? (isStandalone() ? 'Este navegador no admite notificaciones.' : 'Primero añade la app a la pantalla de inicio (Safari → Compartir → Añadir a pantalla de inicio) y ábrela desde ahí.')
-      : `Permiso: ${Notification.permission === 'granted' ? 'concedido' : Notification.permission === 'denied' ? 'denegado (cámbialo en Ajustes del iPhone)' : 'sin pedir'}`;
+    const canPush = 'serviceWorker' in navigator && 'PushManager' in window;
+    const pushState = !canPush
+      ? 'Para recibir avisos, abre la app desde la pantalla de inicio.'
+      : Notification.permission === 'granted' ? 'Avisos activados en este dispositivo.'
+        : Notification.permission === 'denied' ? 'Avisos bloqueados. Actívalos en los Ajustes del iPhone.' : '';
     view(`
-      <p class="eyebrow">Ajustes</p>
       <h1>Ajustes</h1>
-      <div class="card">
-        <div class="row">
-          <div><label for="wake">Me despierto</label><input id="wake" type="time" value="${esc(s.wake)}"></div>
-          <div><label for="bed">Móvil fuera a las</label><input id="bed" type="time" value="${esc(s.bedtime)}"></div>
-        </div>
-        <label for="tone">Tono de los mensajes</label>
-        <select id="tone">
-          <option value="cercano" ${s.tone === 'cercano' ? 'selected' : ''}>Cercano: amable, sin culpa</option>
-          <option value="directo" ${s.tone === 'directo' ? 'selected' : ''}>Directo: corto y firme</option>
-        </select>
-        <div class="row">
-          <div><label for="allow">Minutos al «entrar»</label><input id="allow" type="number" min="1" max="30" value="${s.allowMinutes}"></div>
-          <div><label for="lw">Espera del candado</label><input id="lw" type="number" min="5" max="120" value="${s.lockWaitMinutes}"></div>
-        </div>
+
+      <h2>Horario</h2>
+      <div class="row">
+        <div><label for="wake">Me despierto</label><input id="wake" type="time" value="${esc(s.wake)}"></div>
+        <div><label for="bed">Móvil fuera</label><input id="bed" type="time" value="${esc(s.bedtime)}"></div>
       </div>
 
-      <div class="card">
-        <h3>Notificaciones</h3>
-        <p class="small muted">${pushState}</p>
-        <button class="secondary" id="push">Activar notificaciones</button>
-        <div class="switch"><label for="n1">30 min antes: prepara la noche</label><input type="checkbox" id="n1" ${s.notif.nightPrep ? 'checked' : ''}></div>
-        <div class="switch"><label for="n2">Hora de aparcar el móvil</label><input type="checkbox" id="n2" ${s.notif.nightPark ? 'checked' : ''}></div>
-        <div class="switch"><label for="n3">Buenos días + primer paso</label><input type="checkbox" id="n3" ${s.notif.morningHello ? 'checked' : ''}></div>
-        <div class="switch"><label for="n4">Recordatorio a los 45 min si la mañana sigue a medias</label><input type="checkbox" id="n4" ${s.notif.morningNudge ? 'checked' : ''}></div>
-        <div class="switch"><label for="nmax">Máximo al día</label><input id="nmax" type="number" min="0" max="8" value="${s.notif.maxPerDay}" style="width:80px"></div>
-        <button class="ghost" id="test">Enviar una de prueba</button>
+      <h2>Avisos</h2>
+      ${pushState ? `<p class="small muted">${pushState}</p>` : ''}
+      ${canPush && Notification.permission !== 'granted' ? '<button class="secondary" id="push">Activar avisos</button>' : ''}
+      <div class="switch"><label for="n1">30 min antes de aparcar</label><input type="checkbox" id="n1" ${s.notif.nightPrep ? 'checked' : ''}></div>
+      <div class="switch"><label for="n2">Hora de aparcar</label><input type="checkbox" id="n2" ${s.notif.nightPark ? 'checked' : ''}></div>
+      <div class="switch"><label for="n3">Buenos días</label><input type="checkbox" id="n3" ${s.notif.morningHello ? 'checked' : ''}></div>
+      <div class="switch"><label for="n4">Recordatorio si la mañana va a medias</label><input type="checkbox" id="n4" ${s.notif.morningNudge ? 'checked' : ''}></div>
+      <div class="switch"><label for="nmax">Máximo al día</label><input id="nmax" type="number" min="0" max="8" value="${s.notif.maxPerDay}"></div>
+      <label for="tone">Tono</label>
+      <select id="tone">
+        <option value="cercano" ${s.tone === 'cercano' ? 'selected' : ''}>Cercano</option>
+        <option value="directo" ${s.tone === 'directo' ? 'selected' : ''}>Directo</option>
+      </select>
+      ${canPush && Notification.permission === 'granted' ? '<button class="ghost" id="test">Enviar uno de prueba</button>' : ''}
+
+      <h2>Pasos de la mañana</h2>
+      <p class="small muted">Uno por línea. Los que empiezan por * forman la versión corta.</p>
+      <textarea id="steps">${esc(stepsText)}</textarea>
+
+      <h2>Alternativas al móvil</h2>
+      <label for="ab">Con poca energía</label><textarea id="ab" style="min-height:110px">${esc(altsBy('baja'))}</textarea>
+      <label for="am">Con energía normal</label><textarea id="am" style="min-height:90px">${esc(altsBy('media'))}</textarea>
+      <label for="aa">Con bastante energía</label><textarea id="aa" style="min-height:60px">${esc(altsBy('alta'))}</textarea>
+
+      <h2>Otros</h2>
+      <div class="row">
+        <div><label for="allow">Minutos al «entrar»</label><input id="allow" type="number" min="1" max="30" value="${s.allowMinutes}"></div>
+        <div><label for="lw">Espera del candado</label><input id="lw" type="number" min="5" max="120" value="${s.lockWaitMinutes}"></div>
       </div>
 
-      <div class="card">
-        <h3>Pasos de la mañana</h3>
-        <p class="small muted">Uno por línea. Los que empiezan por <b>*</b> forman la versión mínima, la de los días sin energía.</p>
-        <textarea id="steps">${esc(stepsText)}</textarea>
-      </div>
-
-      <div class="card">
-        <h3>Alternativas al móvil</h3>
-        <p class="small muted">Una por línea. Se proponen según tu energía.</p>
-        <label for="ab">Energía baja</label><textarea id="ab" style="min-height:110px">${esc(altsBy('baja'))}</textarea>
-        <label for="am">Energía media</label><textarea id="am" style="min-height:90px">${esc(altsBy('media'))}</textarea>
-        <label for="aa">Energía alta</label><textarea id="aa" style="min-height:70px">${esc(altsBy('alta'))}</textarea>
-      </div>
-
+      <div class="space"></div>
       <button id="save">Guardar</button>
-      <a class="btn secondary" href="#/atajos">Guía de Atajos de iOS</a>
+      <a class="btn secondary" href="#/atajos">Configurar Atajos de iOS</a>
       <button class="ghost" id="export">Descargar mis datos</button>
-      <button class="ghost" id="logout">Cerrar sesión en este dispositivo</button>
+      <button class="ghost" id="logout">Cerrar sesión</button>
     `);
 
     on('#save', 'click', async () => {
@@ -618,8 +557,8 @@
     });
     on('#push', 'click', enablePush);
     on('#test', 'click', async () => {
-      const r = await api('/api/push/test', { method: 'POST' });
-      toast(r.sent ? 'Enviada' : 'No hay dispositivos suscritos');
+      const r = await post('/api/push/test');
+      toast(r.sent ? 'Enviado' : 'No hay dispositivos suscritos');
     });
     on('#export', 'click', async () => {
       const data = await api('/api/export');
@@ -628,23 +567,20 @@
       a.download = `mananas-${S.local.date}.json`;
       a.click();
     });
-    on('#logout', 'click', () => { store.del('token'); location.hash = '#/login'; });
+    on('#logout', 'click', () => { local.del('token'); location.hash = '#/login'; });
   }
 
   async function enablePush() {
     try {
-      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-        return toast('Abre la app desde la pantalla de inicio', 3000);
-      }
       const perm = await Notification.requestPermission();
-      if (perm !== 'granted') return toast('Sin permiso para notificar');
+      if (perm !== 'granted') return toast('Sin permiso para avisar');
       const reg = await navigator.serviceWorker.ready;
       const { key } = await api('/api/push/key');
       const raw = atob(key.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (key.length % 4)) % 4));
       const appServerKey = Uint8Array.from(raw, (c) => c.charCodeAt(0));
       const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: appServerKey }));
       await api('/api/push/subscribe', { body: sub.toJSON() });
-      toast('Notificaciones activadas');
+      toast('Avisos activados');
       renderSettings();
     } catch (err) {
       toast(err.message, 3500);
@@ -655,50 +591,49 @@
     const base = location.origin;
     const t = encodeURIComponent(token() || '');
     const block = (txt) => `<pre class="copy">${esc(txt)}</pre><button class="ghost small" data-copy="${esc(txt)}">Copiar</button>`;
-    const apps = [['instagram', 'Instagram'], ['youtube', 'YouTube']];
     view(`
-      <p class="eyebrow">Atajos de iOS</p>
+      <p class="label">Atajos de iOS</p>
       <h1>Que el iPhone te pare a tiempo</h1>
-      <p class="muted">Son automatizaciones de la app <b>Atajos</b> que llaman a esta web. Se configuran una vez. Las URLs llevan tu código de acceso: no las compartas.</p>
+      <p class="muted">Automatizaciones de la app Atajos. Se configuran una vez. Las URLs llevan tu código: no las compartas.</p>
+      <div class="space"></div>
 
-      <div class="card">
-        <h3>1 · Pausa al abrir Instagram o YouTube</h3>
+      <details open>
+        <summary>Pausa al abrir Instagram o YouTube</summary>
         <ol class="guide small">
-          <li>Atajos → <b>Automatización</b> → <b>+</b> → <b>App</b> → elige Instagram → marca <b>«Se abre»</b> → <b>Ejecutar inmediatamente</b>.</li>
-          <li>Añade la acción <b>Obtener contenido de URL</b> con:</li>
+          <li>Atajos → Automatización → + → <b>App</b> → Instagram → <b>Se abre</b> → <b>Ejecutar inmediatamente</b>.</li>
+          <li>Acción <b>Obtener contenido de URL</b>:</li>
         </ol>
         ${block(`${base}/api/gate?app=instagram&t=${t}`)}
         <ol class="guide small" start="3">
-          <li>Añade <b>Si</b> → «Contenido de URL» <b>contiene</b> <code>pausa</code>.</li>
-          <li>Dentro del «Si», añade <b>Abrir URL</b> con:</li>
+          <li>Acción <b>Si</b> → «Contenido de URL» <b>contiene</b> <code>pausa</code>.</li>
+          <li>Dentro del «Si», acción <b>Abrir URL</b>:</li>
         </ol>
         ${block(`${base}/#/pausa?app=instagram&t=${t}`)}
-        <p class="small muted">Repite lo mismo para YouTube cambiando <code>instagram</code> por <code>youtube</code> en las dos URLs. Si en la pausa eliges «Entrar unos minutos», durante ese rato el atajo te deja pasar sin parar.</p>
-      </div>
+        <p class="small muted">Para YouTube, repite cambiando <code>instagram</code> por <code>youtube</code> en las dos URLs.</p>
+      </details>
 
-      <div class="card">
-        <h3>2 · La alarma abre tu mañana</h3>
+      <details>
+        <summary>La alarma abre tu mañana</summary>
         <ol class="guide small">
-          <li>Automatización → <b>+</b> → <b>Alarma</b> → <b>«Se detiene»</b> (cualquier alarma) → Ejecutar inmediatamente.</li>
+          <li>Automatización → + → <b>Alarma</b> → <b>Se detiene</b> → Ejecutar inmediatamente.</li>
           <li>Acción <b>Abrir URL</b>:</li>
         </ol>
         ${block(`${base}/#/manana?t=${t}`)}
-        <p class="small muted">Así lo primero que ves al apagar la alarma es tu primer paso, no Instagram.</p>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>3 · (Opcional) Modo Dormir → preparar la noche</h3>
+      <details>
+        <summary>Modo Dormir abre la noche (opcional)</summary>
         <ol class="guide small">
-          <li>Automatización → <b>+</b> → <b>Modo de concentración</b> → Dormir → «Al activarse».</li>
+          <li>Automatización → + → <b>Modo de concentración</b> → Dormir → Al activarse.</li>
           <li>Acción <b>Abrir URL</b>:</li>
         </ol>
         ${block(`${base}/#/noche?t=${t}`)}
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>4 · X en el navegador</h3>
-        <p class="small muted">Atajos no detecta webs. Para X usa el <a href="#/candado" style="color:inherit">Candado</a>: añade <code>x.com</code> a los límites de Tiempo de uso.</p>
-      </div>
+      <details>
+        <summary>X en el navegador</summary>
+        <p class="small muted">Atajos no detecta webs. Añade <code>x.com</code> a los límites de Tiempo de uso y protégelo con el <a href="#/candado">candado</a>.</p>
+      </details>
     `);
     on('[data-copy]', 'click', async (e, el) => {
       try { await navigator.clipboard.writeText(el.dataset.copy); toast('Copiado'); } catch { toast('Mantén pulsado el texto para copiarlo'); }
@@ -725,7 +660,7 @@
       }
     } catch (err) {
       if (err.message === 'no autorizado') return;
-      view(`<h1>Vaya</h1><p class="muted">${esc(err.message)}</p><button onclick="location.reload()">Reintentar</button>`);
+      view(`<h1>Algo ha fallado</h1><p class="muted">${esc(err.message)}</p><button onclick="location.reload()">Reintentar</button>`);
     }
   }
 

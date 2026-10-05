@@ -30,18 +30,16 @@ test('summarizeDay junta mañana, plan y aparcado de la noche anterior', () => {
   assert.strictEqual(L.summarizeDay('2026-10-05', ev, TZ).parkedTonight, true);
 });
 
-test('energía a partir de Garmin', () => {
-  assert.strictEqual(L.energyFromVitals({ battery_max: 90, sleep_score: 80, sleep_seconds: 8 * 3600 }), 'alta');
-  assert.strictEqual(L.energyFromVitals({ battery_max: 40, sleep_score: 80, sleep_seconds: 8 * 3600 }), 'baja');
-  assert.strictEqual(L.energyFromVitals({ battery_max: 80, sleep_score: 70, sleep_seconds: 4 * 3600 }), 'baja');
-  assert.strictEqual(L.energyFromVitals({ battery_max: 68, sleep_score: 60, sleep_seconds: 7 * 3600 }), 'media');
-  assert.strictEqual(L.energyFromVitals(null), null);
-});
-
-test('hora de dormir alrededor de medianoche', () => {
-  assert.strictEqual(L.bedtimeAroundMidnight(23 * 60), -60);
-  assert.strictEqual(L.bedtimeAroundMidnight(150), 150);
-  assert.strictEqual(L.bedtimeAroundMidnight(17 * 60), null);
+test('conclusión de aparcar a tu hora', () => {
+  const at = (h, m) => h * 60 + m;
+  const days = [
+    { parkedAt: at(23, 50), win: true }, { parkedAt: at(0, 10), win: true }, { parkedAt: at(23, 40), win: false },
+    { parkedAt: at(2, 0), win: false }, { parkedAt: null, win: false }, { parkedAt: null, win: true },
+  ];
+  const r = L.parkingInsight(days, '00:00');
+  assert.deepStrictEqual(r.onTime, { n: 3, of10: 7 });
+  assert.deepStrictEqual(r.other, { n: 3, of10: 3 });
+  assert.strictEqual(L.parkingInsight(days.slice(0, 2), '00:00').onTime, null);
 });
 
 test('notificaciones: solo en su ventana, una vez y si hace falta', () => {
@@ -56,11 +54,4 @@ test('notificaciones: solo en su ventana, una vez y si hace falta', () => {
   assert.deepStrictEqual(L.dueNotifications(s, at(8, 20), base, []).map((n) => n.kind), ['morningNudge']);
   assert.deepStrictEqual(L.dueNotifications(s, at(8, 20), { ...base, morningDone: true }, []), []);
   assert.deepStrictEqual(L.dueNotifications(s, at(12, 0), base, []), []);
-});
-
-test('normalizeVitals acepta el export de vitals-lab', () => {
-  const rows = L.normalizeVitals({ data: { days: [{ date: '2026-10-05', battery_max: 87, sleep_series: [1, 2], foo: 1 }, { date: 'x' }] } });
-  assert.strictEqual(rows.length, 1);
-  assert.strictEqual(rows[0].battery_max, 87);
-  assert.ok(!('sleep_series' in rows[0]));
 });

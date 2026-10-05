@@ -9,12 +9,12 @@ La app no intenta ser otra app que mirar. Hace pocas cosas, en los momentos que 
 | Momento | Qué hace |
 |---|---|
 | **Noche** (aviso 30 min antes y a la hora) | En dos minutos eliges lo primero que harás mañana y dejas el móvil cargando **fuera del cuarto**. Pulsas «Aparcado». |
-| **Al apagar la alarma** (Atajo de iOS) | Se abre tu mañana: **un solo paso a la vez** en grande (sentarte, persiana, agua, bajar a la perrita…). Si tienes poca energía, o Garmin dice que dormiste mal, toca la *versión mínima*, que cuenta igual. |
+| **Al apagar la alarma** (Atajo de iOS) | Se abre tu mañana: **un solo paso a la vez** en grande (sentarte, persiana, agua, bajar a la perrita…). Si tienes poca energía, haces la *versión corta*, que cuenta igual. |
 | **Al abrir Instagram o YouTube** (Atajo de iOS) | Pausa de 8 segundos respirando, la pregunta «¿qué te ha traído aquí?» y una alternativa según tu energía. Si buscas algo concreto, puedes entrar 5 minutos y te avisa cuando acaben. Si tu mañana está a medias, te devuelve a ella. |
 | **Candado** | Genera un código de Tiempo de uso que **no te sabes**. Solo lo ves si completas tu mañana o esperas 15 min. Al verlo se rota por uno nuevo. Así los límites no se saltan con un toque. |
-| **Progreso** | Soles por cada mañana ganada. **Sin rachas que romper**: la semana empieza limpia y el total solo sube. Además cruza tus datos de Garmin con la hora a la que te duermes. |
+| **Progreso** | Soles por cada mañana ganada. **Sin rachas que romper**: la semana empieza limpia y el total solo sube. Con unas semanas de uso, te muestra cuántas mañanas ganas cuando aparcas el móvil a tu hora y cuántas cuando no. |
 
-Con tus datos de Garmin (julio–octubre 2026): las noches que te duermes antes de la 1 despiertas con batería corporal **80** y sueño **70**. Si te duermes después de las 2, bajan a **67** y **60**. La mañana se gana la noche anterior, y por eso la app trabaja sobre todo en esos dos momentos.
+La mañana se gana la noche anterior, por eso la app trabaja sobre todo en esos dos momentos. No depende de ningún otro dispositivo ni servicio: todo sale de lo que marcas en la propia app.
 
 ### Por qué es una webapp y no una app nativa
 
@@ -45,10 +45,6 @@ Dentro de la app tienes **Ajustes → Guía de Atajos de iOS**, con tus URLs lis
 - **Instagram / YouTube**: Atajos → Automatización → App → «Se abre» → Ejecutar inmediatamente → *Obtener contenido de URL* `…/api/gate?app=instagram&t=…` → *Si* contiene `pausa` → *Abrir URL* `…/#/pausa?app=instagram&t=…`
 - **Alarma**: Automatización → Alarma → «Se detiene» → *Abrir URL* `…/#/manana?t=…`
 - **Tiempo de uso**: en la pestaña Candado están los pasos. Lo esencial es poner límites a Instagram, YouTube, `x.com`, `instagram.com` y `youtube.com`, y prohibir **instalar apps** para no poder reinstalar Instagram en un mal momento.
-
-## Garmin
-
-En **Progreso → Importar export de Garmin** puedes subir el JSON de *vitals-lab*. Con él, la app calcula tu energía de cada mañana (batería corporal y sueño) y propone la versión mínima los días malos. Para sincronizar automáticamente, pon en `VITALS_URL` una URL que devuelva ese mismo JSON (y `VITALS_TOKEN` si necesita autenticación): el servidor la consulta cada hora.
 
 ## Desarrollo local
 
