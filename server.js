@@ -5,6 +5,7 @@ const webpush = require('web-push');
 const { createStore } = require('./lib/store');
 const { parts, localDate, nightKey, addDays, hm } = require('./lib/time');
 const L = require('./lib/logic');
+const AI = require('./lib/ai');
 
 const store = createStore();
 const app = express();
@@ -159,6 +160,8 @@ async function buildState() {
       return e ? { at: e.at, minutes: e.data.minutes, pickups: e.data.pickups } : null;
     })(),
     weekFocusMinutes,
+    aiEnabled: AI.configured() && s.ai !== false,
+    aiAvailable: AI.configured(),
   };
 }
 
@@ -186,9 +189,11 @@ app.get('/api/state', wrap(async (req, res) => res.json(await buildState())));
 app.put('/api/settings', wrap(async (req, res) => {
   const current = await settings();
   const body = req.body || {};
-  const allowed = ['tz', 'wake', 'bedtime', 'tone', 'allowMinutes', 'lockWaitMinutes', 'morningSteps', 'alternatives', 'apps', 'notif'];
+  const allowed = ['tz', 'wake', 'bedtime', 'tone', 'allowMinutes', 'lockWaitMinutes', 'morningSteps', 'alternatives', 'apps', 'notif', 'ai', 'aboutMe'];
   const next = { ...current };
   for (const k of allowed) if (k in body) next[k] = body[k];
+  next.ai = next.ai !== false;
+  next.aboutMe = String(next.aboutMe || '').slice(0, 600);
   if (!/^\d{2}:\d{2}$/.test(next.wake) || !/^\d{2}:\d{2}$/.test(next.bedtime)) {
     return res.status(400).json({ error: 'hora inválida' });
   }
@@ -249,6 +254,97 @@ app.post('/api/focus/stop', wrap(async (req, res) => {
   if (!focus) return res.json({ minutes: 0 });
   await cancelPush('focus');
   res.json({ minutes: await finishFocus(focus, new Date()) });
+}));
+
+// ---------- IA (OpenRouter) ----------
+
+const ENERGY_WORD = { baja: 'baja', media: 'normal', alta: 'alta' };
+const REASON_TEXT = {
+  descansar: 'dice que necesita descansar',
+  inercia: 'reconoce que la ha abierto por costumbre, sin pensar',
+  fin: 'se le acaba de terminar el rato que se había dado en la app',
+};
+
+async function aiContext() {
+  const st = await buildState();
+  if (!st.aiEnabled) return null;
+  const hhmm = `${String(st.local.hour).padStart(2, '0')}:${String(st.local.minute).padStart(2, '0')}`;
+  return { st, hhmm };
+}
+
+app.post('/api/ai/smaller', wrap(async (req, res) => {
+  const ctx = await aiContext();
+  if (!ctx) return res.json({ step: null });
+  const step = (ctx.st.settings.morningSteps || []).find((x) => x.id === req.body?.stepId);
+  if (!step) return res.status(400).json({ error: 'paso desconocido' });
+  const out = await AI.smallerStep({
+    store,
+    date: ctx.st.local.date,
+    settings: ctx.st.settings,
+    step: step.text,
+    time: ctx.hhmm,
+    energy: ENERGY_WORD[ctx.st.energy],
+  });
+  if (out) await store.addEvent('ai_smaller', { stepId: step.id, micro: out.step });
+  res.json({ step: out ? out.step : null });
+}));
+
+app.post('/api/ai/pause', wrap(async (req, res) => {
+  const ctx = await aiContext();
+  if (!ctx) return res.json({ action: null });
+  const { st, hhmm } = ctx;
+  const appName = ((st.settings.apps || []).find((a) => a.id === req.body?.app) || {}).name || 'una app';
+  const facts = [
+    `son las ${hhmm} de un ${new Date().toLocaleDateString('es', { weekday: 'long', timeZone: st.settings.tz })}`,
+    `iba a abrir ${appName}`,
+    REASON_TEXT[req.body?.reason] || '',
+    st.energy ? `su energía hoy es ${ENERGY_WORD[st.energy]}` : '',
+    st.today.morningDone ? 'ya ha completado su rutina de mañana' : '',
+    st.today.plan ? `anoche dijo que hoy lo primero sería: ${st.today.plan}` : '',
+    `hoy ha intentado abrir apps ${st.today.pauses} veces y ${st.today.redirected} veces eligió otra cosa`,
+    st.mode === 'noche' ? 'es casi la hora de dejar el móvil fuera del cuarto para dormir' : '',
+  ].filter(Boolean).join('; ');
+  const avoid = (Array.isArray(req.body?.avoid) ? req.body.avoid : []).map((x) => String(x).slice(0, 100)).slice(0, 5);
+  const out = await AI.pauseSuggestion({ store, date: st.local.date, settings: st.settings, context: facts, avoid });
+  res.json(out || { action: null });
+}));
+
+app.get('/api/ai/week', wrap(async (req, res) => {
+  const ctx = await aiContext();
+  if (!ctx) return res.json({ text: null });
+  const { st } = ctx;
+  const cached = await store.get('ai_week');
+  if (cached && cached.date === st.local.date) return res.json({ text: cached.text });
+
+  const events = await recentEvents(16);
+  const firstUse = events.length ? localDate(events[0].at, st.settings.tz) : st.local.date;
+  const lines = [];
+  for (let d = addDays(st.local.date, -13); d <= st.local.date; d = addDays(d, 1)) {
+    if (d < firstUse) continue;
+    const sum = L.summarizeDay(d, events, st.settings.tz);
+    const dayEvents = events.filter((e) => localDate(e.at, st.settings.tz) === d);
+    const focus = dayEvents.filter((e) => e.type === 'focus_end').reduce((a, e) => a + (e.data.minutes || 0), 0);
+    const parkedAt = sum.parkedLastNightAt ? parts(sum.parkedLastNightAt, st.settings.tz) : null;
+    const reasons = dayEvents.filter((e) => e.type === 'pause_choice' && e.data.reason).map((e) => e.data.reason);
+    lines.push([
+      new Date(`${d}T12:00:00Z`).toLocaleDateString('es', { weekday: 'short', day: 'numeric', timeZone: 'UTC' }),
+      sum.morningDone ? 'mañana completada' : 'mañana sin completar',
+      parkedAt ? `móvil fuera la noche anterior a las ${String(parkedAt.hour).padStart(2, '0')}:${String(parkedAt.minute).padStart(2, '0')}` : 'no aparcó el móvil la noche anterior',
+      sum.energyManual ? `energía ${ENERGY_WORD[sum.energyManual]}` : '',
+      `${sum.pauses} intentos de abrir apps, ${sum.redirected} veces eligió otra cosa`,
+      reasons.length ? `motivos: ${reasons.join(', ')}` : '',
+      focus ? `${focus} min sin móvil en clase o biblioteca` : '',
+    ].filter(Boolean).join(', '));
+  }
+  if (lines.length < 2) return res.json({ text: null });
+  const text = await AI.weekReflection({
+    store,
+    date: st.local.date,
+    settings: st.settings,
+    summary: `Hora prevista para dejar el móvil: ${st.settings.bedtime}. Despertador: ${st.settings.wake}.\n${lines.join('\n')}`,
+  });
+  if (text) await store.set('ai_week', { date: st.local.date, text });
+  res.json({ text });
 }));
 
 // ---------- candado de Tiempo de uso ----------

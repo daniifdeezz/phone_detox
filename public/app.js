@@ -50,6 +50,11 @@
   }
 
   const event = (type, data = {}) => api('/api/event', { body: { type, data } });
+
+  // Llamada a la IA con tiempo máximo: si tarda o falla, devuelve null y se usa el texto fijo.
+  function withTimeout(promise, ms) {
+    return Promise.race([promise.catch(() => null), new Promise((r) => setTimeout(() => r(null), ms))]);
+  }
   const post = (path, body) => api(path, { method: 'POST', body });
 
   function parseHash() {
@@ -265,15 +270,31 @@
       await event('morning_done', { energy: S.energy, steps: S.today.stepsDone.length });
       return renderMorning();
     }
-    screen({
-      top: `<span>${steps.indexOf(next) + 1} / ${steps.length}</span><span>${S.energy === 'baja' ? 'Versión corta' : ''}</span>`,
-      middle: `<p class="say">${esc(next.text)}</p>`,
-      bottom: '<button id="done">Hecho</button>',
-    });
-    on('#done', 'click', async () => {
-      await event('morning_step', { stepId: next.id });
-      renderMorning();
-    });
+    const top = `<span>${steps.indexOf(next) + 1} / ${steps.length}</span><span>${S.energy === 'baja' ? 'Versión corta' : ''}</span>`;
+    const showStep = (sub = '') => {
+      screen({
+        top,
+        middle: `<p class="say">${esc(next.text)}</p>${sub ? `<p class="sub">${esc(sub)}</p>` : ''}`,
+        bottom: '<button id="done">Hecho</button><button class="text" id="hard">Me cuesta</button>',
+      });
+      on('#done', 'click', async () => {
+        await event('morning_step', { stepId: next.id });
+        renderMorning();
+      });
+      on('#hard', 'click', async (e, el) => {
+        el.textContent = '·  ·  ·';
+        el.disabled = true;
+        const r = S.aiEnabled ? await withTimeout(api('/api/ai/smaller', { body: { stepId: next.id } }), 7000) : null;
+        const micro = r?.step || 'Haz solo el primer movimiento. Nada más.';
+        screen({
+          top: '<span>Solo esto</span>',
+          middle: `<p class="say">${esc(micro)}</p>`,
+          bottom: '<button id="micro">Hecho</button>',
+        });
+        on('#micro', 'click', () => showStep('Ya has empezado. Lo difícil está hecho.'));
+      });
+    };
+    showStep();
   }
 
   // ----- noche -----
@@ -316,6 +337,7 @@
     const S = await api('/api/state');
     const appDef = (S.settings.apps || []).find((a) => a.id === appId) || { id: appId, name: appId, url: '' };
     const seen = [];
+    const seenTexts = [];
     let reason = null;
 
     if (S.focus) {
@@ -334,7 +356,7 @@
       if (appDef.url) setTimeout(() => { location.href = appDef.url; }, 400);
     };
 
-    const suggest = () => {
+    const suggest = async () => {
       const nextStep = S.mode === 'manana' && !S.today.morningDone && activeSteps(S).find((s) => !S.today.stepsDone.includes(s.id));
       if (reason === 'concreto') {
         screen({
@@ -350,10 +372,20 @@
         });
         return event('pause_choice', { app: appId, reason, choice: 'manana' });
       }
-      const alt = pickAlternative(S, reason === 'descansar' ? 'baja' : S.energy, seen);
-      seen.push(alt.id);
+      let alt = null;
+      if (S.aiEnabled) {
+        screen({ middle: '<p class="say muted">·  ·  ·</p>' });
+        const r = await withTimeout(api('/api/ai/pause', { body: { app: appId, reason, avoid: seenTexts } }), 6000);
+        if (r?.action) alt = { id: 'ia', text: r.action, why: r.reason };
+      }
+      if (!alt) {
+        alt = pickAlternative(S, reason === 'descansar' ? 'baja' : S.energy, seen);
+        seen.push(alt.id);
+      }
+      seenTexts.push(alt.text);
+      const why = alt.why || (finished ? 'Se acabó el tiempo.' : '');
       screen({
-        middle: `<p class="say">${esc(alt.text)}</p>${finished ? '<p class="sub">Se acabó el tiempo.</p>' : ''}`,
+        middle: `<p class="say">${esc(alt.text)}</p>${why ? `<p class="sub">${esc(why)}</p>` : ''}`,
         bottom: `<button id="go">Lo hago</button><button class="text" id="other">Otra idea</button>${finished ? '' : `<button class="text" id="enter">Entrar ${S.settings.allowMinutes} min</button>`}`,
       });
       on('#other', 'click', suggest);
@@ -408,8 +440,17 @@
         <p class="sub">${S.totalWins === 1 ? 'mañana ganada' : 'mañanas ganadas'}</p>
         ${weekDots(S)}
         <div class="gap"></div>
-        ${lines.map((l) => `<p>${esc(l)}</p>`).join('')}`,
+        ${lines.map((l) => `<p>${esc(l)}</p>`).join('')}
+        <p id="week" class="sub" hidden></p>`,
     });
+    if (S.aiEnabled) {
+      const r = await withTimeout(api('/api/ai/week'), 16000);
+      const el = $app.querySelector('#week');
+      if (el && r?.text) {
+        el.textContent = r.text;
+        el.hidden = false;
+      }
+    }
   }
 
   // ----- candado de Tiempo de uso -----
@@ -523,6 +564,16 @@
         </details>
 
         <details>
+          <summary>IA</summary>
+          ${S.aiAvailable
+            ? `<div class="switch"><label for="ai">Usar IA</label><input type="checkbox" id="ai" ${s.ai !== false ? 'checked' : ''}></div>
+               <label for="about">Sobre ti</label>
+               <textarea id="about" style="min-height:120px">${esc(s.aboutMe || '')}</textarea>
+               <p class="small muted">La IA parte los pasos que se te atascan, propone qué hacer en la pausa y resume tu semana. Recibe lo que escribas aquí y tu uso de la app (horas, pasos, pausas); nunca tu código del candado.</p>`
+            : '<p class="small muted">Desactivada. Para activarla, añade <code>OPENROUTER_API_KEY</code> en las variables de Railway.</p>'}
+        </details>
+
+        <details>
           <summary>Alternativas al móvil</summary>
           <label for="ab">Con poca energía</label><textarea id="ab" style="min-height:110px">${esc(altsBy('baja'))}</textarea>
           <label for="am">Con energía normal</label><textarea id="am" style="min-height:90px">${esc(altsBy('media'))}</textarea>
@@ -560,6 +611,7 @@
             tone: val('#tone'),
             allowMinutes: Number(val('#allow')) || 5,
             lockWaitMinutes: Number(val('#lw')) || 15,
+            ...($app.querySelector('#ai') ? { ai: $app.querySelector('#ai').checked, aboutMe: val('#about').trim().slice(0, 600) } : {}),
             morningSteps,
             alternatives,
             notif: {

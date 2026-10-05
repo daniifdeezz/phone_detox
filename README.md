@@ -17,6 +17,16 @@ La app no intenta ser otra app que mirar. Hace pocas cosas, en los momentos que 
 
 La mañana se gana la noche anterior, por eso la app trabaja sobre todo en esos dos momentos. No depende de ningún otro dispositivo ni servicio: todo sale de lo que marcas en la propia app.
 
+### IA (opcional, vía OpenRouter)
+
+Si añades `OPENROUTER_API_KEY`, la app usa IA en tres momentos concretos:
+
+- **«Me cuesta»** en un paso de la mañana: lo parte en un micro-paso de menos de 10 segundos («Destápate y apoya un pie en el suelo»).
+- **La pausa al abrir Instagram/YouTube**: propone una alternativa concreta según la hora, tu energía, lo que respondiste y lo que llevas hoy.
+- **Progreso**: una lectura breve de tus últimos 14 días con un único ajuste para los próximos.
+
+Lo que escribas en *Ajustes → IA → Sobre ti* le da contexto. Se envía tu uso de la app (horas, pasos, pausas), nunca el código del candado. Si la IA tarda, falla o no hay clave, la app usa sus textos fijos. Hay un límite diario de llamadas (`AI_DAILY_LIMIT`, 80 por defecto) para que el coste esté controlado. El modelo por defecto es `anthropic/claude-haiku-4.5`; se cambia con `OPENROUTER_MODEL`.
+
 ### Por qué es una webapp y no una app nativa
 
 Para bloquear apps desde código, Apple obliga a usar la API de Tiempo de uso (FamilyControls) desde una app nativa con un permiso especial que Apple concede a mano. **AltStore, SideStore y LiveContainer no conservan ese permiso**, así que una app nativa instalada por esas vías no podría bloquear nada. Esta app usa tres cosas que sí funcionan:
@@ -33,6 +43,7 @@ Para bloquear apps desde código, Apple obliga a usar la API de Tiempo de uso (F
    - `APP_TOKEN` = un código largo que te inventes (es tu contraseña)
    - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`
    - `VAPID_SUBJECT` = `mailto:tu@correo.com`
+   - `OPENROUTER_API_KEY` = tu clave de [openrouter.ai/keys](https://openrouter.ai/keys) (opcional, para la IA)
 4. **Settings → Networking → Generate Domain**. Esa es la URL de la app.
 5. En el iPhone, abre la URL en **Safari**, mete el código y pulsa **Compartir → Añadir a pantalla de inicio**.
 6. Abre la app **desde el icono** → Ajustes → **Activar notificaciones** → «Enviar una de prueba».
