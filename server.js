@@ -5,6 +5,7 @@ const webpush = require('web-push');
 const { createStore } = require('./lib/store');
 const { parts, localDate, nightKey, addDays, hm } = require('./lib/time');
 const L = require('./lib/logic');
+const { env } = require('./lib/env');
 const AI = require('./lib/ai');
 
 const store = createStore();
@@ -12,7 +13,7 @@ const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '10mb' }));
 
-let APP_TOKEN = process.env.APP_TOKEN || null;
+let APP_TOKEN = env('APP_TOKEN') || null;
 
 // ---------- utilidades ----------
 
@@ -41,14 +42,21 @@ async function recentEvents(days = 35) {
 
 async function setupPush() {
   let keys =
-    process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
-      ? { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY }
+    env('VAPID_PUBLIC_KEY') && env('VAPID_PRIVATE_KEY')
+      ? { publicKey: env('VAPID_PUBLIC_KEY'), privateKey: env('VAPID_PRIVATE_KEY') }
       : await store.get('vapid');
   if (!keys) {
     keys = webpush.generateVAPIDKeys();
     await store.set('vapid', keys);
   }
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:phone-detox@example.com', keys.publicKey, keys.privateKey);
+  let subject = env('VAPID_SUBJECT', 'mailto:phone-detox@example.com');
+  if (/^[^:\s]+@[^\s]+$/.test(subject)) subject = `mailto:${subject}`;
+  try {
+    webpush.setVapidDetails(subject, keys.publicKey, keys.privateKey);
+  } catch (err) {
+    console.error(`VAPID_SUBJECT no válido (${subject}): ${err.message}. Uso uno genérico; revisa la variable en Railway.`);
+    webpush.setVapidDetails('mailto:phone-detox@example.com', keys.publicKey, keys.privateKey);
+  }
   return keys.publicKey;
 }
 
@@ -536,7 +544,7 @@ async function main() {
     console.log(`\n  Sin APP_TOKEN en el entorno. Código de acceso generado: ${APP_TOKEN}\n`);
   }
   await setupPush();
-  const port = Number(process.env.PORT) || 3000;
+  const port = Number(env('PORT')) || 3000;
   app.listen(port, () => console.log(`phone-detox escuchando en :${port}`));
   setInterval(() => tick().catch((e) => console.error('tick', e)), 60e3);
   tick().catch((e) => console.error('tick', e));
