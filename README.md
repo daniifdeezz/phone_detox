@@ -11,6 +11,7 @@ La app no intenta ser otra app que mirar. Hace pocas cosas, en los momentos que 
 | **Noche** (aviso 30 min antes y a la hora) | En dos minutos eliges lo primero que harás mañana y dejas el móvil cargando **fuera del cuarto**. Pulsas «Aparcado». |
 | **Al apagar la alarma** (Atajo de iOS) | Se abre tu mañana: **un solo paso a la vez** en grande (sentarte, persiana, agua, bajar a la perrita…). Si tienes poca energía, haces la *versión corta*, que cuenta igual. |
 | **Al abrir Instagram o YouTube** (Atajo de iOS) | Pausa de 8 segundos respirando, la pregunta «¿qué te ha traído aquí?» y una alternativa según tu energía. Si buscas algo concreto, puedes entrar 5 minutos y te avisa cuando acaben. Si tu mañana está a medias, te devuelve a ella. |
+| **Clase o biblioteca** | Eliges dónde estás y cuánto tiempo (25 min a 2 h). La pantalla solo muestra los minutos que quedan. Mientras dura la sesión, la pausa de Instagram/YouTube no deja entrar, y cada vez que vuelves a mirar el móvil cuenta. Con un Atajo de ubicación, se abre sola al llegar a la uni o a la biblioteca. |
 | **Candado** | Genera un código de Tiempo de uso que **no te sabes**. Solo lo ves si completas tu mañana o esperas 15 min. Al verlo se rota por uno nuevo. Así los límites no se saltan con un toque. |
 | **Progreso** | Soles por cada mañana ganada. **Sin rachas que romper**: la semana empieza limpia y el total solo sube. Con unas semanas de uso, te muestra cuántas mañanas ganas cuando aparcas el móvil a tu hora y cuántas cuando no. |
 
@@ -43,6 +44,7 @@ Las claves de notificaciones se generan solas la primera vez y se guardan en Pos
 Dentro de la app tienes **Ajustes → Guía de Atajos de iOS**, con tus URLs listas para copiar. En resumen:
 
 - **Instagram / YouTube**: Atajos → Automatización → App → «Se abre» → Ejecutar inmediatamente → *Obtener contenido de URL* `…/api/gate?app=instagram&t=…` → *Si* contiene `pausa` → *Abrir URL* `…/#/pausa?app=instagram&t=…`
+- **Uni / biblioteca**: Automatización → Llegar → la ubicación → *Abrir URL* `…/#/foco?lugar=clase&t=…` (o `lugar=biblioteca`)
 - **Alarma**: Automatización → Alarma → «Se detiene» → *Abrir URL* `…/#/manana?t=…`
 - **Tiempo de uso**: en la pestaña Candado están los pasos. Lo esencial es poner límites a Instagram, YouTube, `x.com`, `instagram.com` y `youtube.com`, y prohibir **instalar apps** para no poder reinstalar Instagram en un mal momento.
 

@@ -1,5 +1,5 @@
 // Service worker: caché básica para abrir rápido y recepción de notificaciones push.
-const CACHE = 'mananas-v2';
+const CACHE = 'mananas-v3';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.webmanifest', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {

@@ -69,12 +69,52 @@ async function sendPush(payload) {
   return sent;
 }
 
+// ---------- modo clase / biblioteca ----------
+
+const FOCUS_PLACES = { clase: 'clase', biblioteca: 'la biblioteca', estudio: 'modo estudio' };
+
+async function schedulePush(entry) {
+  const pending = await store.get('pending_push', []);
+  pending.push(entry);
+  await store.set('pending_push', pending);
+}
+
+async function cancelPush(tag) {
+  const pending = await store.get('pending_push', []);
+  await store.set('pending_push', pending.filter((x) => x.tag !== tag));
+}
+
+async function finishFocus(focus, endAt) {
+  const minutes = Math.max(0, Math.round((endAt - new Date(focus.start)) / 60e3));
+  await store.del('focus');
+  await store.addEvent('focus_end', {
+    place: focus.place,
+    minutes,
+    planned: focus.minutes,
+    early: endAt < new Date(focus.end),
+    pickups: focus.pickups || 0,
+  }, endAt);
+  return minutes;
+}
+
+// Sesión activa, o null. Si ya ha terminado, la cierra y la registra.
+async function currentFocus() {
+  const focus = await store.get('focus');
+  if (!focus) return null;
+  if (new Date(focus.end) <= new Date()) {
+    await finishFocus(focus, new Date(focus.end));
+    return null;
+  }
+  return focus;
+}
+
 // ---------- estado ----------
 
 async function buildState() {
   const s = await settings();
   const now = new Date();
   const p = parts(now, s.tz);
+  const focus = await currentFocus();
   const events = await recentEvents();
   const today = L.summarizeDay(p.date, events, s.tz);
   const tonightDate = nightKey(now, s.tz);
@@ -89,6 +129,9 @@ async function buildState() {
   }
   const allEvents = await store.events(new Date(0));
   const totalWins = new Set(allEvents.filter((e) => e.type === 'morning_done').map((e) => localDate(e.at, s.tz))).size;
+  const weekFocusMinutes = events
+    .filter((e) => e.type === 'focus_end' && localDate(e.at, s.tz) >= ws)
+    .reduce((a, e) => a + (e.data.minutes || 0), 0);
 
   // Qué pantalla toca: noche (desde 1 h antes de dormir hasta 2 h antes de despertar),
   // mañana (hasta 4 h después de despertar, si no está hecha) o día.
@@ -110,6 +153,12 @@ async function buildState() {
     energy: today.energyManual,
     week,
     totalWins,
+    focus: focus ? { ...focus, placeText: FOCUS_PLACES[focus.place] || focus.place } : null,
+    lastFocus: (() => {
+      const e = events.filter((x) => x.type === 'focus_end').pop();
+      return e ? { at: e.at, minutes: e.data.minutes, pickups: e.data.pickups } : null;
+    })(),
+    weekFocusMinutes,
   };
 }
 
@@ -123,9 +172,10 @@ app.post('/api/login', (req, res) => {
 // Para los Atajos de iOS: responde "abrir" o "pausa" en texto plano.
 app.get('/api/gate', auth, wrap(async (req, res) => {
   const appId = String(req.query.app || 'app').slice(0, 40);
+  const focus = await currentFocus();
   const until = await store.get(`allow:${appId}`);
-  if (until && new Date(until) > new Date()) return res.type('text').send('abrir');
-  await store.addEvent('gate_pause', { app: appId });
+  if (!focus && until && new Date(until) > new Date()) return res.type('text').send('abrir');
+  await store.addEvent('gate_pause', { app: appId, focus: !!focus });
   res.type('text').send('pausa');
 }));
 
@@ -164,11 +214,41 @@ app.post('/api/allow', wrap(async (req, res) => {
   const appId = String(req.body?.app || 'app').slice(0, 40);
   const minutes = Math.min(Math.max(Number(req.body?.minutes) || s.allowMinutes, 1), 30);
   const until = new Date(Date.now() + minutes * 60e3);
+  if (await currentFocus()) return res.status(409).json({ error: 'estás en una sesión' });
   await store.set(`allow:${appId}`, until.toISOString());
-  const pending = await store.get('pending_push', []);
-  pending.push({ at: until.toISOString(), kind: 'allowOver', vars: { min: minutes }, url: '/#/pausa?app=' + appId + '&fin=1' });
-  await store.set('pending_push', pending);
+  await schedulePush({ at: until.toISOString(), kind: 'allowOver', vars: { min: minutes }, url: '/#/pausa?app=' + appId + '&fin=1' });
   res.json({ until });
+}));
+
+app.post('/api/focus/start', wrap(async (req, res) => {
+  const place = String(req.body?.place || 'estudio');
+  if (!(place in FOCUS_PLACES)) return res.status(400).json({ error: 'lugar desconocido' });
+  const minutes = Math.min(Math.max(Math.round(Number(req.body?.minutes) || 50), 5), 300);
+  const old = await currentFocus();
+  if (old) await finishFocus(old, new Date());
+  const start = new Date();
+  const end = new Date(start.getTime() + minutes * 60e3);
+  const focus = { place, minutes, start: start.toISOString(), end: end.toISOString(), pickups: 0 };
+  await store.set('focus', focus);
+  await store.addEvent('focus_start', { place, minutes });
+  await cancelPush('focus');
+  await schedulePush({ at: end.toISOString(), kind: 'focusOver', vars: { min: minutes }, url: '/#/foco', tag: 'focus' });
+  res.json(focus);
+}));
+
+app.post('/api/focus/pickup', wrap(async (req, res) => {
+  const focus = await currentFocus();
+  if (!focus) return res.json({ active: false });
+  focus.pickups = (focus.pickups || 0) + 1;
+  await store.set('focus', focus);
+  res.json({ active: true, pickups: focus.pickups });
+}));
+
+app.post('/api/focus/stop', wrap(async (req, res) => {
+  const focus = await currentFocus();
+  if (!focus) return res.json({ minutes: 0 });
+  await cancelPush('focus');
+  res.json({ minutes: await finishFocus(focus, new Date()) });
 }));
 
 // ---------- candado de Tiempo de uso ----------
@@ -324,6 +404,7 @@ async function tick() {
   const p = parts(now, s.tz);
 
   // Avisos pedidos por el usuario ("entrar 5 min").
+  await currentFocus();
   const pending = await store.get('pending_push', []);
   const due = pending.filter((x) => new Date(x.at) <= now);
   if (due.length) {

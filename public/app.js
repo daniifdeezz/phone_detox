@@ -1,9 +1,9 @@
-/* Mañanas — PWA sin dependencias. Rutas por hash: #/, #/manana, #/noche, #/pausa, #/progreso, #/candado, #/ajustes, #/atajos */
+/* Mañanas — PWA sin dependencias.
+   Rutas: #/, #/manana, #/noche, #/foco, #/pausa, #/progreso, #/candado, #/ajustes, #/atajos */
 (() => {
   'use strict';
 
   const $app = document.getElementById('app');
-  const $nav = document.getElementById('nav');
   const $toast = document.getElementById('toast');
 
   // ---------- utilidades ----------
@@ -18,6 +18,13 @@
   const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   const shuffle = (xs) => xs.map((x) => [Math.random(), x]).sort((a, b) => a[0] - b[0]).map((x) => x[1]);
   const token = () => local.get('token');
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+  function fmtMin(m) {
+    m = Math.round(m);
+    if (m < 60) return `${m} min`;
+    return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+  }
 
   function toast(msg, ms = 2200) {
     $toast.textContent = msg;
@@ -43,7 +50,7 @@
   }
 
   const event = (type, data = {}) => api('/api/event', { body: { type, data } });
-  const post = (path) => api(path, { method: 'POST' });
+  const post = (path, body) => api(path, { method: 'POST', body });
 
   function parseHash() {
     const raw = location.hash.replace(/^#\/?/, '');
@@ -62,12 +69,17 @@
     history.replaceState(null, '', `${location.pathname}#/${route}${rest ? `?${rest}` : ''}`);
   }
 
-  function view(html, { nav = true } = {}) {
-    $app.innerHTML = `<div class="fade">${html}</div>`;
-    $app.classList.toggle('bare', !nav);
-    $nav.hidden = !nav;
-    const { route } = parseHash();
-    $nav.querySelectorAll('a').forEach((a) => a.classList.toggle('on', a.dataset.r === route));
+  const BACK = '<a href="#/">← Volver</a>';
+
+  // Cada pantalla: una línea arriba, el contenido en el centro y las acciones abajo.
+  function screen({ top = '', middle = '', bottom = '', scroll = false }) {
+    clearInterval(screen.timer);
+    $app.innerHTML = `
+      <div class="screen fade ${scroll ? 'scroll' : ''}">
+        <div class="top">${top}</div>
+        <div class="middle">${middle}</div>
+        <div class="bottom">${bottom}</div>
+      </div>`;
     window.scrollTo(0, 0);
   }
 
@@ -76,18 +88,15 @@
   }
 
   const ENERGY_TEXT = { baja: 'Poca', media: 'Normal', alta: 'Bastante' };
-  const WEEKDAYS = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
-  const today = () => new Date().toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' });
+  const PLACES = { clase: 'Clase', biblioteca: 'Biblioteca', estudio: 'Estudiando' };
+  const DURATIONS = [25, 50, 90, 120];
 
   function activeSteps(S) {
     const steps = S.settings.morningSteps || [];
     return S.energy === 'baja' ? steps.filter((s) => s.min) : steps;
   }
 
-  function weekDots(S) {
-    return `<div class="week">${S.week.map((d, i) => `
-      <div class="day"><div class="dot ${d.win ? 'win' : ''} ${d.date === S.local.date ? 'today' : ''} ${d.future ? 'future' : ''}"></div>${WEEKDAYS[i]}</div>`).join('')}</div>`;
-  }
+  const weekDots = (S) => `<div class="week">${S.week.map((d) => `<span class="dot ${d.win ? 'win' : ''} ${d.future ? 'future' : ''}"></span>`).join('')}</div>`;
 
   function pickAlternative(S, energy, exclude = []) {
     const alts = S.settings.alternatives || [];
@@ -99,87 +108,151 @@
   // ---------- pantallas ----------
 
   function renderLogin() {
-    view(`
-      <h1>Mañanas</h1>
-      <p class="muted">Introduce tu código de acceso.</p>
-      <form id="f">
-        <input id="tok" autocomplete="current-password" type="password" placeholder="Código" required>
-        <div class="space"></div>
-        <button type="submit">Entrar</button>
-      </form>`, { nav: false });
-    $app.querySelector('#f').addEventListener('submit', async (e) => {
-      e.preventDefault();
+    screen({
+      middle: `
+        <p class="say">Mañanas</p>
+        <form id="f"><input id="tok" class="say" autocomplete="current-password" type="password" placeholder="Código de acceso" required></form>`,
+      bottom: '<button id="go">Entrar</button>',
+    });
+    const submit = async (e) => {
+      e?.preventDefault();
       const t = $app.querySelector('#tok').value.trim();
       const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) });
       if (!r.ok) return toast('Código incorrecto');
       local.set('token', t);
       location.hash = '#/';
-    });
+    };
+    $app.querySelector('#f').addEventListener('submit', submit);
+    on('#go', 'click', submit);
   }
 
   async function renderHome() {
     const S = await api('/api/state');
-    const wins = S.week.filter((d) => d.win).length;
-    let main = '';
+    if (S.focus) return renderFocus(S);
+    const date = cap(new Date().toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' }));
+    const top = `<span>${esc(date)}</span><nav><a href="#/progreso">Progreso</a><a href="#/ajustes">Ajustes</a></nav>`;
+
     if (S.mode === 'manana') {
       const next = activeSteps(S).find((s) => !S.today.stepsDone.includes(s.id));
-      main = `
-        <p class="label">Tu mañana</p>
-        <div class="big-text">${esc(next ? next.text : 'Empieza la mañana')}</div>
-        <a class="btn" href="#/manana">Empezar</a>`;
-    } else if (S.mode === 'noche') {
-      main = `
-        <p class="label">Esta noche</p>
-        <div class="big-text">Deja el móvil fuera del cuarto.</div>
-        <a class="btn" href="#/noche">Preparar la noche</a>`;
-    } else if (S.mode === 'aparcado') {
-      main = `
-        <p class="label">Esta noche</p>
-        <div class="big-text">Buenas noches.</div>
-        <p class="muted">Si estás leyendo esto en la cama, el móvil no está fuera.</p>`;
-    } else {
-      main = `
-        <p class="label">${S.today.morningDone ? 'Mañana ganada' : 'Ahora'}</p>
-        <div class="big-text" id="idea">${S.today.morningDone ? 'El resto del día también es tuyo.' : '¿Un rato libre?'}</div>
-        <button class="secondary" id="ideaBtn">Dame una idea</button>`;
+      return screen({
+        top,
+        middle: `<p class="say">${esc(next ? next.text : 'Empieza la mañana.')}</p><p class="sub">Tu mañana, paso a paso.</p>`,
+        bottom: '<a class="btn" href="#/manana">Empezar</a>',
+      });
     }
-
-    view(`
-      <p class="label">${esc(today())}</p>
-      ${main}
-      <h2>Semana</h2>
-      ${weekDots(S)}
-      <p class="small muted">${wins} esta semana · ${S.totalWins} en total</p>
-      ${!isStandalone() ? '<div class="space"></div><p class="small muted">Añádela a la pantalla de inicio (Compartir → Añadir a pantalla de inicio) para recibir avisos.</p>' : ''}
-    `);
-
-    let current = null;
-    on('#ideaBtn', 'click', async (e, el) => {
-      if (current) {
-        await event('alt_done', { alt: current.id, text: current.text });
-        toast('A por ello');
-        return renderHome();
-      }
-      current = pickAlternative(S, S.energy);
-      $app.querySelector('#idea').textContent = current.text;
-      el.textContent = 'Voy';
-      el.classList.remove('secondary');
+    if (S.mode === 'noche') {
+      return screen({
+        top,
+        middle: '<p class="say">Hora de dejar el móvil fuera del cuarto.</p>',
+        bottom: '<a class="btn" href="#/noche">Preparar la noche</a>',
+      });
+    }
+    if (S.mode === 'aparcado') {
+      return screen({ top, middle: '<p class="say">Buenas noches.</p><p class="sub">El móvil, fuera hasta mañana.</p>' });
+    }
+    screen({
+      top,
+      middle: `
+        <p class="say">¿En clase o en la biblioteca?</p>
+        <p class="sub">Deja el móvil y vuelve al terminar.</p>
+        ${weekDots(S)}
+        ${!isStandalone() ? '<p class="sub small">Añádela a la pantalla de inicio para recibir avisos.</p>' : ''}`,
+      bottom: `<a class="btn" href="#/foco">Dejar el móvil</a>${S.local.hour >= 20 ? '<a class="btn text" href="#/noche">Preparar la noche</a>' : ''}`,
     });
   }
 
+  // ----- modo clase / biblioteca -----
+
+  async function renderFocus(S) {
+    S = S || (await api('/api/state'));
+    const { q } = parseHash();
+
+    if (S.focus) {
+      const draw = (confirming = false) => {
+        const left = Math.max(0, Math.ceil((new Date(S.focus.end) - Date.now()) / 60e3));
+        screen({
+          top: `<span>${esc(PLACES[S.focus.place] || '')}</span>`,
+          middle: `
+            <p class="huge">${left}</p>
+            <p class="sub">${left === 1 ? 'minuto' : 'minutos'}. El móvil, boca abajo y lejos.</p>
+            ${S.focus.pickups ? `<p class="sub small">Lo has mirado ${S.focus.pickups} ${S.focus.pickups === 1 ? 'vez' : 'veces'}.</p>` : ''}`,
+          bottom: confirming
+            ? '<button id="stop">Terminar ya</button><button class="text" id="keep">Sigo</button>'
+            : '<button class="text" id="ask">Terminar antes</button>',
+        });
+        on('#ask', 'click', () => draw(true));
+        on('#keep', 'click', () => draw(false));
+        on('#stop', 'click', async () => {
+          const r = await post('/api/focus/stop');
+          focusDone(r.minutes, S.focus.pickups);
+        });
+        screen.timer = setInterval(() => {
+          if (Date.now() >= new Date(S.focus.end)) return router();
+          if (!confirming) draw(false);
+        }, 20000);
+      };
+      return draw();
+    }
+
+    // Recién terminada (por tiempo): resumen.
+    const last = S.lastFocus;
+    if (last && Date.now() - new Date(last.at) < 15 * 60e3 && !q.get('lugar') && !q.get('otra')) {
+      return focusDone(last.minutes, last.pickups, S.weekFocusMinutes);
+    }
+
+    const pickDuration = (place) => {
+      screen({
+        top: BACK,
+        middle: `
+          <p class="say">¿Cuánto tiempo?</p>
+          <div class="options">${DURATIONS.map((m) => `<button data-m="${m}">${fmtMin(m)}</button>`).join('')}</div>`,
+      });
+      on('[data-m]', 'click', async (e, el) => {
+        await post('/api/focus/start', { place, minutes: Number(el.dataset.m) });
+        history.replaceState(null, '', `${location.pathname}#/foco`);
+        toast('Móvil boca abajo. Te aviso al terminar.', 3000);
+        renderFocus();
+      });
+    };
+
+    const place = q.get('lugar');
+    if (place && PLACES[place]) return pickDuration(place);
+    screen({
+      top: BACK,
+      middle: `
+        <p class="say">¿Dónde estás?</p>
+        <div class="options">${Object.entries(PLACES).map(([k, v]) => `<button data-p="${k}">${v}</button>`).join('')}</div>`,
+    });
+    on('[data-p]', 'click', (e, el) => pickDuration(el.dataset.p));
+  }
+
+  async function focusDone(minutes, pickups, weekMinutes) {
+    if (weekMinutes == null) weekMinutes = (await api('/api/state')).weekFocusMinutes;
+    screen({
+      middle: `
+        <p class="say">${minutes >= 1 ? `${fmtMin(minutes)} sin móvil.` : 'Sesión terminada.'}</p>
+        <p class="sub">${pickups ? `Lo miraste ${pickups} ${pickups === 1 ? 'vez' : 'veces'}. ` : ''}${weekMinutes >= 1 ? `Esta semana llevas ${fmtMin(weekMinutes)}.` : ''}</p>`,
+      bottom: '<a class="btn" href="#/">Listo</a><a class="btn text" href="#/foco?otra=1">Otra sesión</a>',
+    });
+  }
+
+  // ----- mañana -----
+
   async function renderMorning() {
     const S = await api('/api/state');
-    if (S.today.morningDone) return renderMorningWin(S);
+    if (S.today.morningDone) {
+      return screen({
+        middle: `<p class="say">Mañana ganada.</p><p class="sub">${S.today.plan ? `Ahora: ${esc(S.today.plan)}.` : 'Ahora, sal de casa.'}</p>${weekDots(S)}`,
+        bottom: '<a class="btn" href="#/">Listo</a>',
+      });
+    }
     if (!S.energy) {
-      view(`
-        <p class="label">Buenos días</p>
-        <h1>¿Cuánta energía tienes?</h1>
-        <p class="muted">Si es poca, hoy haces la versión corta. Cuenta igual.</p>
-        <div class="space"></div>
-        <div class="options">
-          ${Object.entries(ENERGY_TEXT).map(([k, v]) => `<button data-e="${k}">${v}</button>`).join('')}
-        </div>
-      `, { nav: false });
+      screen({
+        top: '<span>Buenos días</span>',
+        middle: `
+          <p class="say">¿Cuánta energía tienes hoy?</p>
+          <div class="options">${Object.entries(ENERGY_TEXT).map(([k, v]) => `<button data-e="${k}">${v}</button>`).join('')}</div>`,
+      });
       on('[data-e]', 'click', async (e, el) => {
         await event('energy', { level: el.dataset.e });
         renderMorning();
@@ -187,88 +260,54 @@
       return;
     }
     const steps = activeSteps(S);
-    const done = S.today.stepsDone;
-    const next = steps.find((s) => !done.includes(s.id));
+    const next = steps.find((s) => !S.today.stepsDone.includes(s.id));
     if (!next) {
-      await event('morning_done', { energy: S.energy, steps: done.length });
+      await event('morning_done', { energy: S.energy, steps: S.today.stepsDone.length });
       return renderMorning();
     }
-    view(`
-      <p class="label">${steps.indexOf(next) + 1} / ${steps.length}${S.energy === 'baja' ? ' · versión corta' : ''}</p>
-      <div class="big-text">${esc(next.text)}</div>
-      <button id="done">Hecho</button>
-      ${S.today.plan ? `<p class="small muted center">Después: ${esc(S.today.plan)}</p>` : ''}
-      <ul class="steps">
-        ${steps.map((s) => `
-          <li class="${done.includes(s.id) ? 'done' : ''} ${s.id === next.id ? 'current' : ''}" data-s="${s.id}">
-            <span class="mark"></span><span class="t">${esc(s.text)}</span>
-          </li>`).join('')}
-      </ul>
-      <h2>Energía</h2>
-      <div class="chips">${Object.entries(ENERGY_TEXT).map(([k, v]) => `<button class="chip ${S.energy === k ? 'on' : ''}" data-lvl="${k}">${v}</button>`).join('')}</div>
-    `, { nav: false });
-    const mark = async (id) => {
-      await event('morning_step', { stepId: id });
-      renderMorning();
-    };
-    on('#done', 'click', () => mark(next.id));
-    on('li[data-s]', 'click', (e, el) => { if (!done.includes(el.dataset.s)) mark(el.dataset.s); });
-    on('[data-lvl]', 'click', async (e, el) => {
-      if (el.dataset.lvl === S.energy) return;
-      await event('energy', { level: el.dataset.lvl });
+    screen({
+      top: `<span>${steps.indexOf(next) + 1} / ${steps.length}</span><span>${S.energy === 'baja' ? 'Versión corta' : ''}</span>`,
+      middle: `<p class="say">${esc(next.text)}</p>`,
+      bottom: '<button id="done">Hecho</button>',
+    });
+    on('#done', 'click', async () => {
+      await event('morning_step', { stepId: next.id });
       renderMorning();
     });
   }
 
-  function renderMorningWin(S) {
-    view(`
-      <p class="label">Mañana ganada</p>
-      <div class="big-text">Hecho.</div>
-      <p class="muted">${S.today.plan ? `Ahora: ${esc(S.today.plan)}.` : 'Ahora, sal de casa. Fuera es más fácil.'}</p>
-      <h2>Semana</h2>
-      ${weekDots(S)}
-      <p class="small muted">${S.totalWins} en total</p>
-      <div class="space"></div>
-      <a class="btn secondary" href="#/">Listo</a>
-    `);
-  }
+  // ----- noche -----
 
   async function renderNight() {
     const S = await api('/api/state');
     if (S.tonight.parked) {
-      view(`
-        <p class="label">Esta noche</p>
-        <div class="big-text">Buenas noches.</div>
-        <p class="muted">Mañana a las ${esc(S.settings.wake)}.${S.tonight.plan ? ` Después de tus pasos: ${esc(S.tonight.plan)}.` : ''}</p>
-      `);
-      return;
+      return screen({
+        top: BACK,
+        middle: `<p class="say">Buenas noches.</p><p class="sub">Alarma a las ${esc(S.settings.wake)}.${S.tonight.plan ? ` Mañana: ${esc(S.tonight.plan)}.` : ''}</p>`,
+      });
     }
-    const alts = S.settings.alternatives || [];
-    const custom = S.tonight.plan && !alts.some((a) => a.text === S.tonight.plan) ? S.tonight.plan : '';
-    view(`
-      <p class="label">Esta noche</p>
-      <h1>Prepara mañana</h1>
-      <h2>Después de tus pasos, lo primero</h2>
-      <div class="chips">${alts.map((a) => `<button class="chip ${S.tonight.plan === a.text ? 'on' : ''}" data-p="${esc(a.text)}">${esc(a.text)}</button>`).join('')}</div>
-      <input id="plan" placeholder="Otra cosa" value="${esc(custom)}">
-      <h2>El móvil</h2>
-      <p class="muted">A cargar fuera del cuarto, con la alarma a las ${esc(S.settings.wake)}. Tendrás que levantarte para apagarla.</p>
-      <div class="space"></div>
-      <button id="park">Aparcado</button>
-    `);
-    let plan = S.tonight.plan || '';
-    on('[data-p]', 'click', (e, el) => {
-      plan = el.dataset.p;
-      $app.querySelectorAll('[data-p]').forEach((c) => c.classList.toggle('on', c === el));
-      $app.querySelector('#plan').value = '';
+    screen({
+      top: BACK,
+      middle: `
+        <p class="say">Mañana, lo primero que harás:</p>
+        <input id="plan" class="say" placeholder="p. ej. ir pronto a la biblioteca" value="${esc(S.tonight.plan || '')}" autocomplete="off">`,
+      bottom: '<button id="next">Siguiente</button>',
     });
-    on('#park', 'click', async () => {
-      const finalPlan = $app.querySelector('#plan').value.trim() || plan;
-      if (finalPlan && finalPlan !== S.tonight.plan) await event('plan_tomorrow', { text: finalPlan });
-      await event('park');
-      renderNight();
+    on('#next', 'click', async () => {
+      const plan = $app.querySelector('#plan').value.trim();
+      if (plan && plan !== S.tonight.plan) await event('plan_tomorrow', { text: plan });
+      screen({
+        middle: `<p class="say">Deja el móvil cargando fuera del cuarto.</p><p class="sub">Con la alarma a las ${esc(S.settings.wake)}. Para apagarla tendrás que levantarte.</p>`,
+        bottom: '<button id="park">Hecho</button>',
+      });
+      on('#park', 'click', async () => {
+        await event('park');
+        renderNight();
+      });
     });
   }
+
+  // ----- pausa al abrir una app -----
 
   async function renderPause() {
     const { q } = parseHash();
@@ -276,165 +315,136 @@
     const finished = q.get('fin') === '1';
     const S = await api('/api/state');
     const appDef = (S.settings.apps || []).find((a) => a.id === appId) || { id: appId, name: appId, url: '' };
-    let reason = null;
     const seen = [];
+    let reason = null;
 
-    const breath = () => {
-      let n = 8;
-      view(`
-        <p class="label center">${esc(appDef.name)}</p>
-        <div class="breath"><div class="circle"><span id="n">${n}</span></div></div>
-        <p class="center muted">Inspira al crecer, suelta al encoger.</p>
-      `, { nav: false });
-      const timer = setInterval(() => {
-        n -= 1;
-        const el = $app.querySelector('#n');
-        if (el) el.textContent = n > 0 ? n : '';
-        if (n <= 0) { clearInterval(timer); ask(); }
-      }, 1000);
-    };
-
-    const ask = () => {
-      view(`
-        <p class="label">Hoy: ${S.today.pauses} ${S.today.pauses === 1 ? 'pausa' : 'pausas'} · ${S.today.redirected} veces otra cosa</p>
-        <h1>¿Qué te ha traído aquí?</h1>
-        <div class="space"></div>
-        <div class="options">
-          <button data-r="concreto">Busco algo concreto</button>
-          <button data-r="cansancio">Cansancio</button>
-          <button data-r="aburrimiento">Aburrimiento</button>
-          <button data-r="inercia">Ni lo he pensado</button>
-          <button data-r="evitar">Estoy evitando algo</button>
-        </div>
-      `, { nav: false });
-      on('[data-r]', 'click', (e, el) => { reason = el.dataset.r; suggest(); });
-    };
-
-    const suggest = () => {
-      const morningPending = S.mode === 'manana' && !S.today.morningDone;
-      const nextStep = activeSteps(S).find((s) => !S.today.stepsDone.includes(s.id));
-      const alt = pickAlternative(S, reason === 'cansancio' ? 'baja' : S.energy, seen);
-      seen.push(alt.id);
-      const lines = {
-        concreto: 'Entra, búscalo y sal. Te aviso al acabar el tiempo.',
-        cansancio: 'El scroll no descansa. Esto sí:',
-        aburrimiento: 'El aburrimiento pasa en dos minutos. Prueba esto:',
-        inercia: 'Piloto automático. Ya lo has visto, que es lo difícil.',
-        evitar: 'Empieza con solo dos minutos de eso que evitas.',
-        fin: 'Se acabó el tiempo.',
-      };
-      const main = morningPending && nextStep
-        ? { text: nextStep.text, href: '#/manana', label: 'Volver a mi mañana' }
-        : { text: alt.text, label: 'Lo hago' };
-      view(`
-        <p class="label">${esc(lines[reason] || '')}</p>
-        <div class="big-text">${esc(main.text)}</div>
-        <button id="go">${main.label}</button>
-        ${main.href ? '' : '<button class="ghost" id="other">Otra idea</button>'}
-        <div class="space"></div>
-        ${finished ? '' : `<button class="secondary" id="enter">Entrar ${S.settings.allowMinutes} min en ${esc(appDef.name)}</button>`}
-        <a class="btn ghost" href="#/">Cerrar</a>
-      `, { nav: false });
-      on('#other', 'click', suggest);
-      on('#go', 'click', async () => {
-        await event('pause_choice', { app: appId, reason, choice: main.href ? 'manana' : 'alternativa', alt: main.href ? null : alt.id });
-        if (main.href) return void (location.hash = main.href);
-        await event('alt_done', { alt: alt.id, text: alt.text });
-        view(`
-          <p class="label">Bien elegido</p>
-          <div class="big-text">Bloquea la pantalla y a por ello.</div>
-          <a class="btn secondary" href="#/">Inicio</a>`, { nav: false });
+    if (S.focus) {
+      const left = Math.max(1, Math.ceil((new Date(S.focus.end) - Date.now()) / 60e3));
+      screen({
+        middle: `<p class="say">Estás en ${esc(S.focus.placeText)}.</p><p class="sub">Quedan ${fmtMin(left)}. ${esc(appDef.name)} puede esperar.</p>`,
+        bottom: '<a class="btn" href="#/foco">Vuelvo a lo mío</a>',
       });
-      on('#enter', 'click', async () => {
-        await api('/api/allow', { body: { app: appId, minutes: S.settings.allowMinutes } });
-        await event('pause_choice', { app: appId, reason, choice: 'entrar' });
-        toast(`Te aviso en ${S.settings.allowMinutes} min`);
-        if (appDef.url) setTimeout(() => { location.href = appDef.url; }, 400);
-      });
-    };
-
-    if (finished) { reason = 'fin'; suggest(); } else breath();
-  }
-
-  async function renderProgress() {
-    const [S, P] = await Promise.all([api('/api/state'), api('/api/progress')]);
-    const wins = P.days.filter((d) => d.win).length;
-    const parked = P.days.filter((d) => d.parked).length;
-    const pauses = P.days.reduce((a, d) => a + d.pauses, 0);
-    const redirected = P.days.reduce((a, d) => a + d.redirected, 0);
-    const offset = (new Date(`${P.days[0].date}T12:00:00Z`).getUTCDay() + 6) % 7;
-    const I = P.insight;
-    let insight = '<p class="muted">Cuando lleves unas semanas, aquí verás cómo influye la hora a la que aparcas el móvil en tus mañanas.</p>';
-    if (I.onTime && I.other) {
-      insight = `<p>Cuando aparcas el móvil a tu hora, ganas <b>${I.onTime.of10} de cada 10</b> mañanas. Cuando no, <b>${I.other.of10} de cada 10</b>.</p>`;
-    }
-    if (I.avgParkedAt) insight += `<p class="small muted">Sueles aparcarlo a las ${I.avgParkedAt}.</p>`;
-    view(`
-      <p class="label">Últimas 4 semanas</p>
-      <h1>Progreso</h1>
-      <div class="space"></div>
-      <div class="stats">
-        <div class="stat"><b>${wins}</b><span>mañanas ganadas</span></div>
-        <div class="stat"><b>${parked}</b><span>noches con el móvil fuera</span></div>
-        <div class="stat"><b>${pauses}</b><span>pausas</span></div>
-        <div class="stat"><b>${pauses ? Math.round((redirected / pauses) * 100) : 0}%</b><span>elegiste otra cosa</span></div>
-      </div>
-      <h2>28 días</h2>
-      <div class="grid28">
-        ${WEEKDAYS.map((d) => `<div class="cell">${d}</div>`).join('')}
-        ${'<div></div>'.repeat(offset)}
-        ${P.days.map((d) => `<div class="cell ${d.win ? 'win' : ''} ${d.parked ? 'parked' : ''}"><i></i><span>${Number(d.date.slice(8))}</span></div>`).join('')}
-      </div>
-      <p class="small muted" style="margin-top:16px">Punto relleno: mañana ganada. Número subrayado: la noche anterior el móvil durmió fuera.</p>
-      <h2>Lo que dicen tus datos</h2>
-      ${insight}
-      <h2>Esta semana</h2>
-      ${weekDots(S)}
-    `);
-  }
-
-  async function renderLock() {
-    const [L, S] = await Promise.all([api('/api/lock'), api('/api/state')]);
-    const setup = `
-      <details>
-        <summary>Qué poner en Tiempo de uso</summary>
-        <ol class="guide small">
-          <li><b>Ajustes → Tiempo de uso → Bloquear ajustes</b>: usa el código de aquí.</li>
-          <li><b>Límites de uso</b>: Instagram, YouTube y los sitios <code>x.com</code>, <code>instagram.com</code>, <code>youtube.com</code>. 15–20 min al día, con «Bloquear al final del límite».</li>
-          <li><b>Contenido y privacidad → Compras en App Store → Instalar apps: No permitir.</b> Así no reinstalas Instagram en un mal momento.</li>
-          <li>Opcional: <b>Tiempo de inactividad</b> de ${esc(S.settings.bedtime)} a ${esc(S.settings.wake)}.</li>
-        </ol>
-        <p class="small muted">Los nombres pueden variar según la versión de iOS. Si olvidas el código, Apple permite restablecerlo con tu Apple ID.</p>
-      </details>`;
-
-    if (!L.exists) {
-      view(`
-        <p class="label">Candado</p>
-        <h1>Un código que no te sabes</h1>
-        <p class="muted">Los límites no sirven si te sabes el código. La app crea uno, lo pones en Tiempo de uso y se esconde. Vuelve a aparecer si completas tu mañana o esperas ${L.waitMinutes} minutos.</p>
-        <div class="space"></div>
-        <button id="new">Crear código</button>
-        <div class="space"></div>
-        ${setup}`);
-      on('#new', 'click', async () => { await post('/api/lock/new'); renderLock(); });
       return;
     }
 
+    const enter = async () => {
+      await api('/api/allow', { body: { app: appId, minutes: S.settings.allowMinutes } });
+      await event('pause_choice', { app: appId, reason, choice: 'entrar' });
+      toast(`Te aviso en ${S.settings.allowMinutes} min`);
+      if (appDef.url) setTimeout(() => { location.href = appDef.url; }, 400);
+    };
+
+    const suggest = () => {
+      const nextStep = S.mode === 'manana' && !S.today.morningDone && activeSteps(S).find((s) => !S.today.stepsDone.includes(s.id));
+      if (reason === 'concreto') {
+        screen({
+          middle: `<p class="say">Vale. ${S.settings.allowMinutes} minutos.</p><p class="sub">Entra, búscalo y sal. Te aviso al acabar.</p>`,
+          bottom: '<button id="enter">Entrar</button><a class="btn text" href="#/">Mejor no</a>',
+        });
+        return on('#enter', 'click', enter);
+      }
+      if (nextStep) {
+        screen({
+          middle: `<p class="say">${esc(nextStep.text)}</p><p class="sub">Tu mañana sigue aquí.</p>`,
+          bottom: '<a class="btn" href="#/manana">Volver a mi mañana</a>',
+        });
+        return event('pause_choice', { app: appId, reason, choice: 'manana' });
+      }
+      const alt = pickAlternative(S, reason === 'descansar' ? 'baja' : S.energy, seen);
+      seen.push(alt.id);
+      screen({
+        middle: `<p class="say">${esc(alt.text)}</p>${finished ? '<p class="sub">Se acabó el tiempo.</p>' : ''}`,
+        bottom: `<button id="go">Lo hago</button><button class="text" id="other">Otra idea</button>${finished ? '' : `<button class="text" id="enter">Entrar ${S.settings.allowMinutes} min</button>`}`,
+      });
+      on('#other', 'click', suggest);
+      on('#enter', 'click', enter);
+      on('#go', 'click', async () => {
+        await event('pause_choice', { app: appId, reason, choice: 'alternativa', alt: alt.id });
+        await event('alt_done', { alt: alt.id, text: alt.text });
+        screen({ middle: '<p class="say">Bien.</p><p class="sub">Bloquea la pantalla y a por ello.</p>' });
+      });
+    };
+
+    if (finished) { reason = 'fin'; return suggest(); }
+
+    let n = 8;
+    screen({
+      top: `<span>${esc(appDef.name)}</span>`,
+      middle: '<div class="circle"></div>',
+      bottom: '<p class="sub" style="text-align:center">Respira.</p>',
+    });
+    screen.timer = setInterval(() => {
+      n -= 1;
+      if (n > 0) return;
+      clearInterval(screen.timer);
+      screen({
+        middle: `
+          <p class="say">¿Qué buscas?</p>
+          <div class="options">
+            <button data-r="concreto">Algo concreto</button>
+            <button data-r="descansar">Descansar</button>
+            <button data-r="inercia">Nada, es costumbre</button>
+          </div>`,
+      });
+      on('[data-r]', 'click', (e, el) => { reason = el.dataset.r; suggest(); });
+    }, 1000);
+  }
+
+  // ----- progreso -----
+
+  async function renderProgress() {
+    const [S, P] = await Promise.all([api('/api/state'), api('/api/progress')]);
+    const I = P.insight;
+    const lines = [];
+    if (S.weekFocusMinutes) lines.push(`${fmtMin(S.weekFocusMinutes)} sin móvil en clase o biblioteca esta semana.`);
+    if (I.onTime && I.other) lines.push(`Cuando aparcas el móvil a tu hora, ganas ${I.onTime.of10} de cada 10 mañanas. Cuando no, ${I.other.of10}.`);
+    if (!lines.length) lines.push('Con unos días de uso, aquí verás qué te funciona.');
+    screen({
+      top: BACK,
+      scroll: true,
+      middle: `
+        <div class="gap"></div>
+        <p class="huge">${S.totalWins}</p>
+        <p class="sub">${S.totalWins === 1 ? 'mañana ganada' : 'mañanas ganadas'}</p>
+        ${weekDots(S)}
+        <div class="gap"></div>
+        ${lines.map((l) => `<p>${esc(l)}</p>`).join('')}`,
+    });
+  }
+
+  // ----- candado de Tiempo de uso -----
+
+  async function renderLock() {
+    const [L, S] = await Promise.all([api('/api/lock'), api('/api/state')]);
+    const guide = `
+      <details>
+        <summary class="small muted">Qué poner en Tiempo de uso</summary>
+        <ol class="guide">
+          <li><b>Bloquear ajustes de Tiempo de uso</b> con el código de la app.</li>
+          <li><b>Límites de uso</b>: Instagram, YouTube, <code>x.com</code>, <code>instagram.com</code> y <code>youtube.com</code>. 15–20 min al día.</li>
+          <li><b>Contenido y privacidad → Instalar apps: No permitir.</b> Así no reinstalas Instagram.</li>
+          <li>Opcional: <b>Tiempo de inactividad</b> de ${esc(S.settings.bedtime)} a ${esc(S.settings.wake)}.</li>
+        </ol>
+      </details>`;
+
+    if (!L.exists) {
+      screen({
+        top: '<a href="#/ajustes">← Volver</a>',
+        middle: `<p class="say">Un código de Tiempo de uso que no te sabes.</p>
+          <p class="sub">Solo vuelve a aparecer si completas tu mañana o esperas ${L.waitMinutes} minutos.</p>${guide}`,
+        bottom: '<button id="new">Crear código</button>',
+      });
+      return on('#new', 'click', async () => { await post('/api/lock/new'); renderLock(); });
+    }
+
     if (L.pendingCode) {
-      view(`
-        <p class="label">Candado</p>
-        ${L.previousCode
-          ? `<h1>Código actual</h1>
-             <div class="code">${esc(L.previousCode)}</div>
-             <p class="muted">Úsalo para entrar en Tiempo de uso. Al acabar, en <b>Cambiar código</b>, pon este nuevo:</p>`
-          : `<h1>Tu código</h1>
-             <p class="muted">Ponlo ahora en Ajustes → Tiempo de uso → Bloquear ajustes. Después no volverás a verlo.</p>`}
-        <div class="code">${esc(L.pendingCode)}</div>
-        <button id="ok">Hecho, escóndelo</button>
-        ${L.previousCode ? '' : '<button class="ghost" id="cancel">Cancelar</button>'}
-        <p class="small muted center">Se esconde solo a los 30 minutos.</p>
-        <div class="space"></div>
-        ${setup}`);
+      screen({
+        middle: L.previousCode
+          ? `<p class="sub">Código actual</p><p class="code">${esc(L.previousCode)}</p>
+             <div class="gap"></div><p class="sub">Al acabar, cámbialo por este</p><p class="code">${esc(L.pendingCode)}</p>`
+          : `<p class="say">Ponlo en Ajustes → Tiempo de uso.</p><p class="code">${esc(L.pendingCode)}</p><p class="sub">Después no volverás a verlo.</p>${guide}`,
+        bottom: `<button id="ok">Hecho</button>${L.previousCode ? '' : '<button class="text" id="cancel">Cancelar</button>'}`,
+      });
       on('#ok', 'click', async () => { await post('/api/lock/confirm'); renderLock(); });
       on('#cancel', 'click', async () => { await post('/api/lock/forget'); renderLock(); });
       return;
@@ -442,32 +452,34 @@
 
     const waitLeft = L.waitEnds ? Math.max(0, Math.ceil((new Date(L.waitEnds) - Date.now()) / 1000)) : null;
     const mmss = (x) => `${Math.floor(x / 60)}:${String(x % 60).padStart(2, '0')}`;
-    view(`
-      <p class="label">Candado</p>
-      <h1>Límites protegidos</h1>
-      <p class="muted">Desde el ${new Date(L.setAt).toLocaleDateString('es', { day: 'numeric', month: 'long' })}.</p>
-      <div class="space"></div>
-      ${L.canReveal
-        ? `<p>${L.morningDone ? 'Has completado tu mañana.' : 'Ya has esperado.'} Puedes ver el código; después se cambiará por uno nuevo.</p>
-           <button id="reveal">Ver el código</button>`
-        : `<p class="muted">Para ver el código, completa tu mañana o espera ${L.waitMinutes} minutos. Si después de esperar lo sigues necesitando, será por algo.</p>
-           ${waitLeft != null ? `<div class="code" id="cd">${mmss(waitLeft)}</div>` : `<button class="secondary" id="wait">Esperar ${L.waitMinutes} min</button>`}
-           ${!L.morningDone ? '<a class="btn" href="#/manana">Ir a mi mañana</a>' : ''}`}
-      <div class="space"></div>
-      ${setup}`);
-    on('#reveal', 'click', async () => { await post('/api/lock/reveal'); renderLock(); });
+    if (L.canReveal) {
+      screen({
+        top: '<a href="#/ajustes">← Volver</a>',
+        middle: '<p class="say">Puedes ver el código.</p><p class="sub">Después se cambiará por uno nuevo.</p>',
+        bottom: '<button id="reveal">Ver el código</button>',
+      });
+      return on('#reveal', 'click', async () => { await post('/api/lock/reveal'); renderLock(); });
+    }
+    screen({
+      top: '<a href="#/ajustes">← Volver</a>',
+      middle: waitLeft != null
+        ? `<p class="huge" id="cd">${mmss(waitLeft)}</p><p class="sub">Si al terminar lo sigues necesitando, será por algo.</p>`
+        : `<p class="say">Límites protegidos.</p><p class="sub">Para ver el código, completa tu mañana o espera ${L.waitMinutes} minutos.</p>`,
+      bottom: waitLeft != null ? '' : `<button class="text" id="wait">Esperar ${L.waitMinutes} min</button>`,
+    });
     on('#wait', 'click', async () => { await post('/api/lock/wait'); renderLock(); });
     if (waitLeft != null) {
       let left = waitLeft;
-      const t = setInterval(() => {
-        const el = $app.querySelector('#cd');
-        if (!el) return clearInterval(t);
+      screen.timer = setInterval(() => {
         left -= 1;
-        if (left <= 0) { clearInterval(t); renderLock(); return; }
-        el.textContent = mmss(left);
+        if (left <= 0) return renderLock();
+        const el = $app.querySelector('#cd');
+        if (el) el.textContent = mmss(left);
       }, 1000);
     }
   }
+
+  // ----- ajustes -----
 
   async function renderSettings() {
     const S = await api('/api/state');
@@ -475,55 +487,62 @@
     const stepsText = s.morningSteps.map((x) => `${x.min ? '* ' : ''}${x.text}`).join('\n');
     const altsBy = (e) => s.alternatives.filter((a) => a.energy === e).map((a) => a.text).join('\n');
     const canPush = 'serviceWorker' in navigator && 'PushManager' in window;
-    const pushState = !canPush
-      ? 'Para recibir avisos, abre la app desde la pantalla de inicio.'
-      : Notification.permission === 'granted' ? 'Avisos activados en este dispositivo.'
-        : Notification.permission === 'denied' ? 'Avisos bloqueados. Actívalos en los Ajustes del iPhone.' : '';
-    view(`
-      <h1>Ajustes</h1>
+    const granted = canPush && Notification.permission === 'granted';
+    screen({
+      top: BACK,
+      scroll: true,
+      middle: `
+        <p class="say">Ajustes</p>
+        <div class="row">
+          <div><label for="wake">Me despierto</label><input id="wake" type="time" value="${esc(s.wake)}"></div>
+          <div><label for="bed">Móvil fuera</label><input id="bed" type="time" value="${esc(s.bedtime)}"></div>
+        </div>
+        <div class="gap"></div>
 
-      <h2>Horario</h2>
-      <div class="row">
-        <div><label for="wake">Me despierto</label><input id="wake" type="time" value="${esc(s.wake)}"></div>
-        <div><label for="bed">Móvil fuera</label><input id="bed" type="time" value="${esc(s.bedtime)}"></div>
-      </div>
+        <details>
+          <summary>Avisos</summary>
+          ${!canPush ? '<p class="small muted">Abre la app desde la pantalla de inicio para activarlos.</p>' : ''}
+          ${canPush && !granted ? '<button id="push">Activar avisos</button>' : ''}
+          <div class="switch"><label for="n1">30 min antes de aparcar</label><input type="checkbox" id="n1" ${s.notif.nightPrep ? 'checked' : ''}></div>
+          <div class="switch"><label for="n2">Hora de aparcar</label><input type="checkbox" id="n2" ${s.notif.nightPark ? 'checked' : ''}></div>
+          <div class="switch"><label for="n3">Buenos días</label><input type="checkbox" id="n3" ${s.notif.morningHello ? 'checked' : ''}></div>
+          <div class="switch"><label for="n4">Si la mañana va a medias</label><input type="checkbox" id="n4" ${s.notif.morningNudge ? 'checked' : ''}></div>
+          <label for="tone">Tono</label>
+          <select id="tone">
+            <option value="cercano" ${s.tone === 'cercano' ? 'selected' : ''}>Cercano</option>
+            <option value="directo" ${s.tone === 'directo' ? 'selected' : ''}>Directo</option>
+          </select>
+          <label for="nmax">Máximo al día</label><input id="nmax" type="number" min="0" max="8" value="${s.notif.maxPerDay}">
+          ${granted ? '<button class="text" id="test">Enviar uno de prueba</button>' : ''}
+        </details>
 
-      <h2>Avisos</h2>
-      ${pushState ? `<p class="small muted">${pushState}</p>` : ''}
-      ${canPush && Notification.permission !== 'granted' ? '<button class="secondary" id="push">Activar avisos</button>' : ''}
-      <div class="switch"><label for="n1">30 min antes de aparcar</label><input type="checkbox" id="n1" ${s.notif.nightPrep ? 'checked' : ''}></div>
-      <div class="switch"><label for="n2">Hora de aparcar</label><input type="checkbox" id="n2" ${s.notif.nightPark ? 'checked' : ''}></div>
-      <div class="switch"><label for="n3">Buenos días</label><input type="checkbox" id="n3" ${s.notif.morningHello ? 'checked' : ''}></div>
-      <div class="switch"><label for="n4">Recordatorio si la mañana va a medias</label><input type="checkbox" id="n4" ${s.notif.morningNudge ? 'checked' : ''}></div>
-      <div class="switch"><label for="nmax">Máximo al día</label><input id="nmax" type="number" min="0" max="8" value="${s.notif.maxPerDay}"></div>
-      <label for="tone">Tono</label>
-      <select id="tone">
-        <option value="cercano" ${s.tone === 'cercano' ? 'selected' : ''}>Cercano</option>
-        <option value="directo" ${s.tone === 'directo' ? 'selected' : ''}>Directo</option>
-      </select>
-      ${canPush && Notification.permission === 'granted' ? '<button class="ghost" id="test">Enviar uno de prueba</button>' : ''}
+        <details>
+          <summary>Pasos de la mañana</summary>
+          <p class="small muted">Uno por línea. Con * delante, forman la versión corta.</p>
+          <textarea id="steps">${esc(stepsText)}</textarea>
+        </details>
 
-      <h2>Pasos de la mañana</h2>
-      <p class="small muted">Uno por línea. Los que empiezan por * forman la versión corta.</p>
-      <textarea id="steps">${esc(stepsText)}</textarea>
+        <details>
+          <summary>Alternativas al móvil</summary>
+          <label for="ab">Con poca energía</label><textarea id="ab" style="min-height:110px">${esc(altsBy('baja'))}</textarea>
+          <label for="am">Con energía normal</label><textarea id="am" style="min-height:90px">${esc(altsBy('media'))}</textarea>
+          <label for="aa">Con bastante energía</label><textarea id="aa" style="min-height:60px">${esc(altsBy('alta'))}</textarea>
+          <div class="row">
+            <div><label for="allow">Minutos al «entrar»</label><input id="allow" type="number" min="1" max="30" value="${s.allowMinutes}"></div>
+            <div><label for="lw">Espera del candado</label><input id="lw" type="number" min="5" max="120" value="${s.lockWaitMinutes}"></div>
+          </div>
+        </details>
 
-      <h2>Alternativas al móvil</h2>
-      <label for="ab">Con poca energía</label><textarea id="ab" style="min-height:110px">${esc(altsBy('baja'))}</textarea>
-      <label for="am">Con energía normal</label><textarea id="am" style="min-height:90px">${esc(altsBy('media'))}</textarea>
-      <label for="aa">Con bastante energía</label><textarea id="aa" style="min-height:60px">${esc(altsBy('alta'))}</textarea>
-
-      <h2>Otros</h2>
-      <div class="row">
-        <div><label for="allow">Minutos al «entrar»</label><input id="allow" type="number" min="1" max="30" value="${s.allowMinutes}"></div>
-        <div><label for="lw">Espera del candado</label><input id="lw" type="number" min="5" max="120" value="${s.lockWaitMinutes}"></div>
-      </div>
-
-      <div class="space"></div>
-      <button id="save">Guardar</button>
-      <a class="btn secondary" href="#/atajos">Configurar Atajos de iOS</a>
-      <button class="ghost" id="export">Descargar mis datos</button>
-      <button class="ghost" id="logout">Cerrar sesión</button>
-    `);
+        <div class="options">
+          <a class="btn text" style="text-align:left;padding:18px 0;color:var(--text);font-size:18px" href="#/candado">Candado de Tiempo de uso</a>
+          <a class="btn text" style="text-align:left;padding:18px 0;color:var(--text);font-size:18px" href="#/atajos">Atajos de iOS</a>
+        </div>
+        <div class="gap"></div>
+        <button class="text" id="export" style="text-align:left;padding:8px 0">Descargar mis datos</button>
+        <button class="text" id="logout" style="text-align:left;padding:8px 0">Cerrar sesión</button>
+        <div class="gap"></div>`,
+      bottom: '<button id="save">Guardar</button>',
+    });
 
     on('#save', 'click', async () => {
       const val = (id) => $app.querySelector(id).value;
@@ -587,54 +606,61 @@
     }
   }
 
+  // ----- guía de Atajos -----
+
   function renderShortcuts() {
     const base = location.origin;
     const t = encodeURIComponent(token() || '');
-    const block = (txt) => `<pre class="copy">${esc(txt)}</pre><button class="ghost small" data-copy="${esc(txt)}">Copiar</button>`;
-    view(`
-      <p class="label">Atajos de iOS</p>
-      <h1>Que el iPhone te pare a tiempo</h1>
-      <p class="muted">Automatizaciones de la app Atajos. Se configuran una vez. Las URLs llevan tu código: no las compartas.</p>
-      <div class="space"></div>
+    const url = (txt) => `<pre class="copy">${esc(txt)}</pre><button class="text small" style="text-align:left;padding:6px 0" data-copy="${esc(txt)}">Copiar</button>`;
+    screen({
+      top: '<a href="#/ajustes">← Volver</a>',
+      scroll: true,
+      middle: `
+        <p class="say">Atajos de iOS</p>
+        <p class="sub">Automatizaciones de la app Atajos. Las URLs llevan tu código: no las compartas.</p>
+        <div class="gap"></div>
 
-      <details open>
-        <summary>Pausa al abrir Instagram o YouTube</summary>
-        <ol class="guide small">
-          <li>Atajos → Automatización → + → <b>App</b> → Instagram → <b>Se abre</b> → <b>Ejecutar inmediatamente</b>.</li>
-          <li>Acción <b>Obtener contenido de URL</b>:</li>
-        </ol>
-        ${block(`${base}/api/gate?app=instagram&t=${t}`)}
-        <ol class="guide small" start="3">
-          <li>Acción <b>Si</b> → «Contenido de URL» <b>contiene</b> <code>pausa</code>.</li>
-          <li>Dentro del «Si», acción <b>Abrir URL</b>:</li>
-        </ol>
-        ${block(`${base}/#/pausa?app=instagram&t=${t}`)}
-        <p class="small muted">Para YouTube, repite cambiando <code>instagram</code> por <code>youtube</code> en las dos URLs.</p>
-      </details>
+        <details>
+          <summary>Pausa al abrir Instagram o YouTube</summary>
+          <ol class="guide">
+            <li>Automatización → + → <b>App</b> → Instagram → <b>Se abre</b> → <b>Ejecutar inmediatamente</b>.</li>
+            <li><b>Obtener contenido de URL</b>:</li>
+          </ol>
+          ${url(`${base}/api/gate?app=instagram&t=${t}`)}
+          <ol class="guide" start="3">
+            <li><b>Si</b> el contenido <b>contiene</b> <code>pausa</code> → <b>Abrir URL</b>:</li>
+          </ol>
+          ${url(`${base}/#/pausa?app=instagram&t=${t}`)}
+          <p class="small muted">Para YouTube, cambia <code>instagram</code> por <code>youtube</code> en las dos URLs.</p>
+        </details>
 
-      <details>
-        <summary>La alarma abre tu mañana</summary>
-        <ol class="guide small">
-          <li>Automatización → + → <b>Alarma</b> → <b>Se detiene</b> → Ejecutar inmediatamente.</li>
-          <li>Acción <b>Abrir URL</b>:</li>
-        </ol>
-        ${block(`${base}/#/manana?t=${t}`)}
-      </details>
+        <details>
+          <summary>Al llegar a la uni o a la biblioteca</summary>
+          <ol class="guide">
+            <li>Automatización → + → <b>Llegar</b> → elige la ubicación → <b>Ejecutar inmediatamente</b>.</li>
+            <li><b>Abrir URL</b> (cambia <code>clase</code> por <code>biblioteca</code> si es la biblioteca):</li>
+          </ol>
+          ${url(`${base}/#/foco?lugar=clase&t=${t}`)}
+          <p class="small muted">Al llegar, solo eliges cuánto tiempo y dejas el móvil en la mochila.</p>
+        </details>
 
-      <details>
-        <summary>Modo Dormir abre la noche (opcional)</summary>
-        <ol class="guide small">
-          <li>Automatización → + → <b>Modo de concentración</b> → Dormir → Al activarse.</li>
-          <li>Acción <b>Abrir URL</b>:</li>
-        </ol>
-        ${block(`${base}/#/noche?t=${t}`)}
-      </details>
+        <details>
+          <summary>La alarma abre tu mañana</summary>
+          <ol class="guide"><li>Automatización → + → <b>Alarma</b> → <b>Se detiene</b> → <b>Abrir URL</b>:</li></ol>
+          ${url(`${base}/#/manana?t=${t}`)}
+        </details>
 
-      <details>
-        <summary>X en el navegador</summary>
-        <p class="small muted">Atajos no detecta webs. Añade <code>x.com</code> a los límites de Tiempo de uso y protégelo con el <a href="#/candado">candado</a>.</p>
-      </details>
-    `);
+        <details>
+          <summary>Modo Dormir abre la noche</summary>
+          <ol class="guide"><li>Automatización → + → <b>Modo de concentración</b> → Dormir → Al activarse → <b>Abrir URL</b>:</li></ol>
+          ${url(`${base}/#/noche?t=${t}`)}
+        </details>
+
+        <details>
+          <summary>X en el navegador</summary>
+          <p class="small muted">Atajos no detecta webs. Añade <code>x.com</code> a los límites de Tiempo de uso y protégelo con el candado.</p>
+        </details>`,
+    });
     on('[data-copy]', 'click', async (e, el) => {
       try { await navigator.clipboard.writeText(el.dataset.copy); toast('Copiado'); } catch { toast('Mantén pulsado el texto para copiarlo'); }
     });
@@ -651,6 +677,7 @@
         case 'login': return renderLogin();
         case 'manana': return await renderMorning();
         case 'noche': return await renderNight();
+        case 'foco': return await renderFocus();
         case 'pausa': return await renderPause();
         case 'progreso': return await renderProgress();
         case 'candado': return await renderLock();
@@ -660,15 +687,23 @@
       }
     } catch (err) {
       if (err.message === 'no autorizado') return;
-      view(`<h1>Algo ha fallado</h1><p class="muted">${esc(err.message)}</p><button onclick="location.reload()">Reintentar</button>`);
+      screen({ middle: `<p class="say">Algo ha fallado.</p><p class="sub">${esc(err.message)}</p>`, bottom: '<button onclick="location.reload()">Reintentar</button>' });
     }
   }
 
   window.addEventListener('hashchange', router);
-  document.addEventListener('visibilitychange', () => {
+
+  // Cada vez que vuelves a la app durante una sesión, cuenta como haber mirado el móvil.
+  let hiddenAt = 0;
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return; }
     const { route } = parseHash();
-    if (document.visibilityState === 'visible' && (route === '' || route === 'candado')) router();
+    if (token() && (route === '' || route === 'foco') && hiddenAt && Date.now() - hiddenAt > 5000) {
+      try { await post('/api/focus/pickup'); } catch { /* sin conexión */ }
+    }
+    if (['', 'foco', 'candado'].includes(route)) router();
   });
+
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
   router();
 })();
