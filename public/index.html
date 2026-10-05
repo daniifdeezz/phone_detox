@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mañanas</title>
+  <meta name="description" content="Recupera tus mañanas y sal del bucle de scroll.">
+  <meta name="theme-color" content="#14161a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Mañanas">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icons/icon-180.png">
+  <link rel="icon" type="image/png" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="app" aria-live="polite"></main>
+  <nav id="nav" hidden>
+    <a href="#/" data-r="">Hoy</a>
+    <a href="#/progreso" data-r="progreso">Progreso</a>
+    <a href="#/candado" data-r="candado">Candado</a>
+    <a href="#/ajustes" data-r="ajustes">Ajustes</a>
+  </nav>
+  <div id="toast" role="status" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>
