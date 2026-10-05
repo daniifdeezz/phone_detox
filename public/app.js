@@ -41,7 +41,7 @@
     });
     if (res.status === 401) {
       local.del('token');
-      location.hash = '#/login';
+      renderLogin();
       throw new Error('no autorizado');
     }
     const data = await res.json().catch(() => ({}));
@@ -63,12 +63,10 @@
     return { route: route || '', q: new URLSearchParams(qs || '') };
   }
 
-  // Los Atajos abren URLs con ?t=TOKEN: lo guardamos y lo quitamos de la barra.
-  function absorbToken() {
+  // Enlaces antiguos con ?t=CÓDIGO: se quita de la barra sin guardarlo. El código ya no viaja en URLs.
+  function stripTokenFromUrl() {
     const { route, q } = parseHash();
-    const t = q.get('t');
-    if (!t) return;
-    local.set('token', t);
+    if (!q.has('t')) return;
     q.delete('t');
     const rest = q.toString();
     history.replaceState(null, '', `${location.pathname}#/${route}${rest ? `?${rest}` : ''}`);
@@ -116,6 +114,7 @@
     screen({
       middle: `
         <p class="say">Mañanas</p>
+        <p class="sub">Solo te lo pide una vez en cada navegador.</p>
         <form id="f"><input id="tok" class="say" autocomplete="current-password" type="password" placeholder="Código de acceso" required></form>`,
       bottom: '<button id="go">Entrar</button>',
     });
@@ -125,7 +124,9 @@
       const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) });
       if (!r.ok) return toast('Código incorrecto');
       local.set('token', t);
-      location.hash = '#/';
+      // Vuelve a la pantalla a la que ibas (p. ej. la pausa que abrió un Atajo).
+      if (parseHash().route === 'login') location.hash = '#/';
+      else router();
     };
     $app.querySelector('#f').addEventListener('submit', submit);
     on('#go', 'click', submit);
@@ -660,16 +661,16 @@
 
   // ----- guía de Atajos -----
 
-  function renderShortcuts() {
+  async function renderShortcuts() {
     const base = location.origin;
-    const t = encodeURIComponent(token() || '');
+    const { key } = await api('/api/shortcut-key');
     const url = (txt) => `<pre class="copy">${esc(txt)}</pre><button class="text small" style="text-align:left;padding:6px 0" data-copy="${esc(txt)}">Copiar</button>`;
     screen({
       top: '<a href="#/ajustes">← Volver</a>',
       scroll: true,
       middle: `
         <p class="say">Atajos de iOS</p>
-        <p class="sub">Automatizaciones de la app Atajos. Las URLs llevan tu código: no las compartas.</p>
+        <p class="sub">Los enlaces no llevan tu código de acceso. La primera vez que un atajo abra Safari, te lo pedirá una sola vez.</p>
         <div class="gap"></div>
 
         <details>
@@ -678,12 +679,12 @@
             <li>Automatización → + → <b>App</b> → Instagram → <b>Se abre</b> → <b>Ejecutar inmediatamente</b>.</li>
             <li><b>Obtener contenido de URL</b>:</li>
           </ol>
-          ${url(`${base}/api/gate?app=instagram&t=${t}`)}
+          ${url(`${base}/api/gate?app=instagram&k=${encodeURIComponent(key)}`)}
           <ol class="guide" start="3">
             <li><b>Si</b> el contenido <b>contiene</b> <code>pausa</code> → <b>Abrir URL</b>:</li>
           </ol>
-          ${url(`${base}/#/pausa?app=instagram&t=${t}`)}
-          <p class="small muted">Para YouTube, cambia <code>instagram</code> por <code>youtube</code> en las dos URLs.</p>
+          ${url(`${base}/#/pausa?app=instagram`)}
+          <p class="small muted">Para YouTube, cambia <code>instagram</code> por <code>youtube</code> en las dos URLs. La primera lleva una llave de atajos: solo sirve para comprobar si toca pausa, no da acceso a tus datos.</p>
         </details>
 
         <details>
@@ -692,26 +693,40 @@
             <li>Automatización → + → <b>Llegar</b> → elige la ubicación → <b>Ejecutar inmediatamente</b>.</li>
             <li><b>Abrir URL</b> (cambia <code>clase</code> por <code>biblioteca</code> si es la biblioteca):</li>
           </ol>
-          ${url(`${base}/#/foco?lugar=clase&t=${t}`)}
+          ${url(`${base}/#/foco?lugar=clase`)}
           <p class="small muted">Al llegar, solo eliges cuánto tiempo y dejas el móvil en la mochila.</p>
         </details>
 
         <details>
           <summary>La alarma abre tu mañana</summary>
           <ol class="guide"><li>Automatización → + → <b>Alarma</b> → <b>Se detiene</b> → <b>Abrir URL</b>:</li></ol>
-          ${url(`${base}/#/manana?t=${t}`)}
+          ${url(`${base}/#/manana`)}
         </details>
 
         <details>
           <summary>Modo Dormir abre la noche</summary>
           <ol class="guide"><li>Automatización → + → <b>Modo de concentración</b> → Dormir → Al activarse → <b>Abrir URL</b>:</li></ol>
-          ${url(`${base}/#/noche?t=${t}`)}
+          ${url(`${base}/#/noche`)}
         </details>
 
         <details>
           <summary>X en el navegador</summary>
           <p class="small muted">Atajos no detecta webs. Añade <code>x.com</code> a los límites de Tiempo de uso y protégelo con el candado.</p>
-        </details>`,
+        </details>
+
+        <div class="gap"></div>
+        <button class="text small" id="rotate" style="text-align:left;padding:6px 0">Cambiar la llave de atajos</button>
+        <p class="small muted">Si alguien ha visto el enlace de la pausa. Tendrás que pegar el enlace nuevo en los atajos de Instagram y YouTube.</p>`,
+    });
+    on('#rotate', 'click', async (e, el) => {
+      if (el.dataset.sure !== '1') {
+        el.dataset.sure = '1';
+        el.textContent = '¿Seguro? Pulsa otra vez';
+        return;
+      }
+      await post('/api/shortcut-key/rotate');
+      toast('Llave cambiada');
+      renderShortcuts();
     });
     on('[data-copy]', 'click', async (e, el) => {
       try { await navigator.clipboard.writeText(el.dataset.copy); toast('Copiado'); } catch { toast('Mantén pulsado el texto para copiarlo'); }
@@ -721,7 +736,7 @@
   // ---------- router ----------
 
   async function router() {
-    absorbToken();
+    stripTokenFromUrl();
     const { route } = parseHash();
     if (!token() && route !== 'login') return renderLogin();
     try {
@@ -734,7 +749,7 @@
         case 'progreso': return await renderProgress();
         case 'candado': return await renderLock();
         case 'ajustes': return await renderSettings();
-        case 'atajos': return renderShortcuts();
+        case 'atajos': return await renderShortcuts();
         default: return await renderHome();
       }
     } catch (err) {

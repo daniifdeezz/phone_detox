@@ -27,7 +27,7 @@ function safeEqual(a, b) {
 
 function auth(req, res, next) {
   const header = req.get('authorization') || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : req.query.t;
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!safeEqual(token, APP_TOKEN)) return res.status(401).json({ error: 'no autorizado' });
   next();
 }
@@ -181,7 +181,21 @@ app.post('/api/login', (req, res) => {
 });
 
 // Para los Atajos de iOS: responde "abrir" o "pausa" en texto plano.
-app.get('/api/gate', auth, wrap(async (req, res) => {
+// Llave de los Atajos: distinta del código de acceso y solo sirve para /api/gate.
+async function shortcutKey(rotate = false) {
+  let key = rotate ? null : await store.get('shortcut_key');
+  if (!key) {
+    key = crypto.randomBytes(12).toString('base64url');
+    await store.set('shortcut_key', key);
+  }
+  return key;
+}
+
+app.get('/api/gate', wrap(async (req, res, next) => {
+  const given = req.get('x-atajo') || req.query.k;
+  if (!safeEqual(given, await shortcutKey())) return res.status(401).type('text').send('llave incorrecta');
+  next();
+}), wrap(async (req, res) => {
   const appId = String(req.query.app || 'app').slice(0, 40);
   const focus = await currentFocus();
   const until = await store.get(`allow:${appId}`);
@@ -193,6 +207,9 @@ app.get('/api/gate', auth, wrap(async (req, res) => {
 app.use('/api', (req, res, next) => (req.path === '/login' ? next() : auth(req, res, next)));
 
 app.get('/api/state', wrap(async (req, res) => res.json(await buildState())));
+
+app.get('/api/shortcut-key', wrap(async (req, res) => res.json({ key: await shortcutKey() })));
+app.post('/api/shortcut-key/rotate', wrap(async (req, res) => res.json({ key: await shortcutKey(true) })));
 
 app.put('/api/settings', wrap(async (req, res) => {
   const current = await settings();

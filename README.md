@@ -54,9 +54,11 @@ Las claves de notificaciones se generan solas la primera vez y se guardan en Pos
 
 Dentro de la app tienes **Ajustes → Guía de Atajos de iOS**, con tus URLs listas para copiar. En resumen:
 
-- **Instagram / YouTube**: Atajos → Automatización → App → «Se abre» → Ejecutar inmediatamente → *Obtener contenido de URL* `…/api/gate?app=instagram&t=…` → *Si* contiene `pausa` → *Abrir URL* `…/#/pausa?app=instagram&t=…`
-- **Uni / biblioteca**: Automatización → Llegar → la ubicación → *Abrir URL* `…/#/foco?lugar=clase&t=…` (o `lugar=biblioteca`)
-- **Alarma**: Automatización → Alarma → «Se detiene» → *Abrir URL* `…/#/manana?t=…`
+Los enlaces no llevan tu código de acceso: la primera vez que un atajo abra Safari, te lo pide una vez y lo recuerda. El de `/api/gate` lleva una **llave de atajos** distinta, que solo sirve para saber si toca pausa y se puede cambiar desde la propia guía.
+
+- **Instagram / YouTube**: Atajos → Automatización → App → «Se abre» → Ejecutar inmediatamente → *Obtener contenido de URL* `…/api/gate?app=instagram&k=LLAVE` → *Si* contiene `pausa` → *Abrir URL* `…/#/pausa?app=instagram`
+- **Uni / biblioteca**: Automatización → Llegar → la ubicación → *Abrir URL* `…/#/foco?lugar=clase` (o `lugar=biblioteca`)
+- **Alarma**: Automatización → Alarma → «Se detiene» → *Abrir URL* `…/#/manana`
 - **Tiempo de uso**: en la pestaña Candado están los pasos. Lo esencial es poner límites a Instagram, YouTube, `x.com`, `instagram.com` y `youtube.com`, y prohibir **instalar apps** para no poder reinstalar Instagram en un mal momento.
 
 ## Desarrollo local
